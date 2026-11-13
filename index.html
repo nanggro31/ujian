@@ -846,7 +846,7 @@ body::after{
           </label>
           <input id="qImageUrl" type="hidden">
           <img id="qImagePreview" class="hide mt-3 max-h-56 max-w-full rounded-xl border border-gray-200 object-contain" alt="Pratinjau gambar soal">
-          <p class="text-xs text-gray-500 mt-1">Format PNG/JPG/WEBP/GIF, maksimal 5 MB. Gambar disimpan di Google Drive.</p>
+          <p class="text-xs text-gray-500 mt-1">Format PNG/JPG/WEBP/GIF, maksimal 5 MB. Gambar akan disimpan di Supabase Storage.</p>
         </div>
         <label class="text-sm">Pilihan A<input id="qOptA" required class="border p-3 rounded-xl w-full mt-1"></label>
         <label class="text-sm">Pilihan B<input id="qOptB" required class="border p-3 rounded-xl w-full mt-1"></label>
@@ -2195,14 +2195,31 @@ function tampilkanFooterHakcipta(tampilkan) {
       if(compressed.length>4*1024*1024) throw new Error('Gambar masih terlalu besar setelah kompresi. Pilih gambar dengan resolusi lebih kecil.');
       return compressed;
     }
-    function uploadQuestionImage(file) {
-      return prepareQuestionImage(file).then(dataUrl=>new Promise((resolve,reject)=>{
-        google.script.run.withSuccessHandler(r=>{
-          if(r&&r.status==='success'&&r.fileId&&r.url) resolve(r.url);
-          else reject(new Error((r&&r.message)||'Google Drive tidak mengonfirmasi penyimpanan gambar.'));
-        }).withFailureHandler(err=>reject(new Error(err&&err.message?err.message:err)))
-          .apiUploadQuestionImage(dataUrl,file.name,authToken);
-      }));
+    async function uploadQuestionImage(file) {
+      if (!window.supabaseClient) throw new Error('Koneksi Supabase belum tersedia.');
+      const { data: sessionData, error: sessionError } = await window.supabaseClient.auth.getSession();
+      if (sessionError) throw sessionError;
+      const accessToken = sessionData && sessionData.session ? sessionData.session.access_token : authToken;
+      if (!accessToken) throw new Error('Sesi Admin tidak ditemukan. Silakan login kembali.');
+
+      // Kompresi menghasilkan JPEG agar ukuran file lebih kecil dan seragam.
+      const dataUrl = await prepareQuestionImage(file);
+      const imageBlob = await (await fetch(dataUrl)).blob();
+      const objectPath = `questions/${crypto.randomUUID()}.jpg`;
+      const { error: uploadError } = await window.supabaseClient.storage
+        .from('question-images')
+        .upload(objectPath, imageBlob, {
+          contentType: 'image/jpeg',
+          cacheControl: '3600',
+          upsert: false
+        });
+      if (uploadError) throw new Error(uploadError.message || 'Gagal mengunggah gambar ke Supabase Storage.');
+
+      const { data: publicData } = window.supabaseClient.storage
+        .from('question-images')
+        .getPublicUrl(objectPath);
+      if (!publicData || !publicData.publicUrl) throw new Error('URL publik gambar tidak berhasil dibuat.');
+      return publicData.publicUrl;
     }
     async function saveQuestion(e) {
       e.preventDefault();
@@ -2210,10 +2227,11 @@ function tampilkanFooterHakcipta(tampilkan) {
       btn.disabled = true;
       btn.innerText = 'Menyimpan...';
       try {
-        const imageUrl = document.getElementById('qImageUrl').value.trim();
+        let imageUrl = document.getElementById('qImageUrl').value.trim();
         const imageFile = document.getElementById('qImageFile').files[0];
         if (imageFile) {
-          throw new Error('Unggah gambar dari perangkat belum terhubung ke Supabase. Untuk sementara, kosongkan pilihan file dan masukkan URL gambar pada kolom URL Gambar.');
+          btn.innerText = 'Mengunggah gambar...';
+          imageUrl = await uploadQuestionImage(imageFile);
         }
 
         const selectedAnswers = Array.from(document.getElementById('qAnswerKey').selectedOptions).map(option => option.value);
