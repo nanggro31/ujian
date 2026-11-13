@@ -4,11 +4,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Uji Server Supabase</title>
+    <title>Uji Koneksi Supabase</title>
 </head>
 <body>
-    <h2>Pengujian Server Supabase</h2>
-    <p id="status">Menghubungkan ke server...</p>
+    <h2>Pengujian Koneksi Supabase</h2>
+    <p id="status">Menghubungkan ke server Supabase...</p>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="js/supabase.js"></script>
@@ -18,13 +18,25 @@
             const status = document.getElementById('status');
 
             try {
-                const { data, error } =
-                    await window.supabaseClient.auth.getSession();
+                const response = await fetch(
+                    SUPABASE_URL + '/auth/v1/health',
+                    {
+                        method: 'GET',
+                        headers: {
+                            'apikey': SUPABASE_PUBLISHABLE_KEY
+                        }
+                    }
+                );
 
-                if (error) throw error;
+                if (!response.ok) {
+                    throw new Error(
+                        'Server merespons dengan status HTTP ' +
+                        response.status
+                    );
+                }
 
                 status.textContent =
-                    'BERHASIL: Server Supabase dapat dihubungi.';
+                    'BERHASIL: Server Supabase dapat dihubungi!';
                 status.style.color = 'green';
 
             } catch (error) {
