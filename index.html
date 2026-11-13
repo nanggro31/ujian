@@ -1192,6 +1192,7 @@ body::after{
     let authToken = null;
     let pendingRestoredSession = null;
     let editingExamId = null;
+    let editingExamStatus = 'Active';
     let editingStudentId = null;
     let editingClassId = null;
     let cachedAdminResults = [];
@@ -1795,6 +1796,40 @@ function tampilkanFooterHakcipta(tampilkan) {
       return result;
     }
 
+    // Pemanggil Edge Function Supabase untuk modul Jadwal Ujian dan Bank Soal.
+    async function callAdminSupabaseFunction(functionName, payload, errorLabel) {
+      if (!window.supabaseClient || typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_PUBLISHABLE_KEY === 'undefined') {
+        throw new Error('Konfigurasi Supabase belum tersedia. Periksa js/supabase.js.');
+      }
+      const { data: sessionData, error: sessionError } = await window.supabaseClient.auth.getSession();
+      if (sessionError) throw sessionError;
+      const accessToken = sessionData && sessionData.session ? sessionData.session.access_token : authToken;
+      if (!accessToken) throw new Error('Sesi login tidak ditemukan. Silakan login kembali.');
+      authToken = accessToken;
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_PUBLISHABLE_KEY,
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || `${errorLabel || 'Permintaan'} gagal. Kode server: ${response.status}`);
+      }
+      return result;
+    }
+
+    async function callExamFunction(payload) {
+      return callAdminSupabaseFunction('manage-exams', payload, 'Permintaan jadwal ujian');
+    }
+
+    async function callQuestionFunction(payload) {
+      return callAdminSupabaseFunction('manage-questions', payload, 'Permintaan bank soal');
+    }
+
     async function loadStudentClassOptions(selectedValue = '') {
       const select = document.getElementById('stClass');
       select.innerHTML = '<option value="">Memuat kelas...</option>';
@@ -1987,17 +2022,28 @@ function tampilkanFooterHakcipta(tampilkan) {
       }
       select.value=current;
     }
-    function loadExamSubjectOptions(selectedValue) {
+    async function loadExamSubjectOptions(selectedValue) {
       const select=document.getElementById('exSubj');
-      if(!serverMode){populateExamSubjectOptions(uniqueQuestionValues('subject'),selectedValue);return;}
-      google.script.run.withSuccessHandler(list=>{
-        const subjects=[...new Set((list||[]).map(q=>String(q.subject||'').trim()).filter(Boolean))]
+      if (serverMode) {
+        google.script.run.withSuccessHandler(list=>{
+          const subjects=[...new Set((list||[]).map(q=>String(q.subject||'').trim()).filter(Boolean))]
+            .sort((a,b)=>a.localeCompare(b,'id',{sensitivity:'base'}));
+          populateExamSubjectOptions(subjects,selectedValue);
+        }).withFailureHandler(err=>{
+          showToast('Gagal memuat mata pelajaran dari Bank Soal: '+(err&&err.message?err.message:err),'error');
+          populateExamSubjectOptions(uniqueQuestionValues('subject'),selectedValue);
+        }).getAdminQuestions(authToken);
+        return;
+      }
+      try {
+        const result = await callQuestionFunction({ action: 'list' });
+        const subjects = [...new Set((result.questions || []).map(q => String(q.subject || '').trim()).filter(Boolean))]
           .sort((a,b)=>a.localeCompare(b,'id',{sensitivity:'base'}));
-        populateExamSubjectOptions(subjects,selectedValue);
-      }).withFailureHandler(err=>{
-        showToast('Gagal memuat mata pelajaran dari Bank Soal: '+(err&&err.message?err.message:err),'error');
-        populateExamSubjectOptions(uniqueQuestionValues('subject'),selectedValue);
-      }).getAdminQuestions(authToken);
+        populateExamSubjectOptions(subjects, selectedValue);
+      } catch (err) {
+        showToast('Gagal memuat mata pelajaran dari Supabase: ' + (err && err.message ? err.message : err), 'error');
+        populateExamSubjectOptions(uniqueQuestionValues('subject'), selectedValue);
+      }
     }
     function renderQuestionRows(active){const tbody=document.getElementById('tableQuestions');tbody.innerHTML='';if(!active.length){tbody.innerHTML='<tr><td colspan="6" class="py-4 text-center text-gray-400">Tidak ada soal sesuai filter.</td></tr>';return;}active.forEach(q=>{const tr=document.createElement('tr');tr.className='border-b border-gray-100';[q.id,q.subject,q.classId||'Semua',q.text,q.points].forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v==null?'-':v;tr.appendChild(td);});const td=document.createElement('td');td.className='py-3 whitespace-nowrap';const edit=document.createElement('button');edit.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1';edit.textContent='Edit';edit.onclick=()=>openQuestionForm(q);const del=document.createElement('button');del.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg';del.textContent='Hapus';del.onclick=()=>deleteQuestion(q);td.append(edit,del);tr.appendChild(td);tbody.appendChild(tr);});}
     function loadAdminQuestions() {
@@ -2154,90 +2200,213 @@ function tampilkanFooterHakcipta(tampilkan) {
       }
     }
 
-    function loadAdminExams() {
+    function formatExamDateTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ').slice(0, 16);
+      return date.toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
+    }
+
+    function toExamDateTimeInput(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+      const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+      return local.toISOString().slice(0, 16);
+    }
+
+    async function loadAdminExams() {
       switchView('view-admin-exams', 'Jadwal & Token Ujian');
       loadClassOptions('exClass');
       loadExamSubjectOptions();
-      const tbody=document.getElementById('tableExams');
-      tbody.innerHTML='<tr><td colspan="8" class="py-4 text-center text-gray-400">Memuat jadwal ujian...</td></tr>';
-      if(!serverMode){tbody.innerHTML='<tr><td colspan="8" class="py-4 text-center text-gray-400">Jadwal tersimpan setelah terhubung ke Google Apps Script.</td></tr>';return;}
-      google.script.run.withSuccessHandler(list=>{
-        tbody.innerHTML='';
-        const examFilter=document.getElementById('filterExamSubject');
-        const previousFilter=examFilter.value;
-        examFilter.innerHTML='<option value="">Semua Mata Pelajaran</option>';
-        [...new Set((list||[]).map(ex=>String(ex.subject||'').trim()).filter(Boolean))]
-          .sort((a,b)=>a.localeCompare(b,'id',{sensitivity:'base'})).forEach(subject=>{
-            const option=document.createElement('option');option.value=subject;option.textContent=subject;examFilter.appendChild(option);
+      const tbody = document.getElementById('tableExams');
+      tbody.innerHTML = '<tr><td colspan="8" class="py-4 text-center text-gray-400">Memuat jadwal ujian...</td></tr>';
+      try {
+        let list = [];
+        if (serverMode) {
+          list = await new Promise((resolve, reject) => {
+            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getAdminExams(authToken);
           });
-        if([...examFilter.options].some(option=>option.value===previousFilter)) examFilter.value=previousFilter;
-        if(!list||!list.length){tbody.innerHTML='<tr><td colspan="8" class="py-4 text-center text-gray-400">Belum ada jadwal ujian.</td></tr>';return;}
-        list.forEach(ex=>{
-          const tr=document.createElement('tr');tr.className='border-b border-gray-100 align-top';tr.dataset.subject=String(ex.subject||'');
-          const schedule=(ex.startAt?ex.startAt.replace('T',' '):'Segera')+' – '+(ex.endAt?ex.endAt.replace('T',' '):'Durasi ujian');
-          const values=[ex.name+'\\n'+ex.subject,ex.classId,schedule,ex.token,ex.duration+' menit',ex.kkm,ex.status];
-          values.forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3 whitespace-pre-line';td.textContent=v||'-';tr.appendChild(td);});
-          const td=document.createElement('td');td.className='py-3';
-          const edit=document.createElement('button');edit.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1 mb-1';edit.textContent='Edit';edit.onclick=()=>editExam(ex);
-          const toggle=document.createElement('button');toggle.className='bg-yellow-100 text-yellow-700 px-3 py-1 rounded-lg mr-1 mb-1';toggle.textContent=ex.status==='Active'?'Nonaktifkan':'Aktifkan';toggle.onclick=()=>toggleExamStatus(ex);
-          const del=document.createElement('button');del.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg mb-1';del.textContent='Hapus';del.onclick=()=>deleteExam(ex);
-          td.append(edit,toggle,del);tr.appendChild(td);tbody.appendChild(tr);
+        } else {
+          const result = await callExamFunction({ action: 'list' });
+          list = result.exams || [];
+        }
+
+        tbody.innerHTML = '';
+        const examFilter = document.getElementById('filterExamSubject');
+        const previousFilter = examFilter.value;
+        examFilter.innerHTML = '<option value="">Semua Mata Pelajaran</option>';
+        [...new Set((list || []).map(ex => String(ex.subject || '').trim()).filter(Boolean))]
+          .sort((a,b)=>a.localeCompare(b,'id',{sensitivity:'base'})).forEach(subject => {
+            const option = document.createElement('option');
+            option.value = subject;
+            option.textContent = subject;
+            examFilter.appendChild(option);
+          });
+        if ([...examFilter.options].some(option => option.value === previousFilter)) examFilter.value = previousFilter;
+        if (!list || !list.length) {
+          tbody.innerHTML = '<tr><td colspan="8" class="py-4 text-center text-gray-400">Belum ada jadwal ujian.</td></tr>';
+          return;
+        }
+        list.forEach(ex => {
+          const tr = document.createElement('tr');
+          tr.className = 'border-b border-gray-100 align-top';
+          tr.dataset.subject = String(ex.subject || '');
+          const schedule = (ex.startAt ? formatExamDateTime(ex.startAt) : 'Segera') + ' – ' + (ex.endAt ? formatExamDateTime(ex.endAt) : 'Durasi ujian');
+          const values = [ex.name + '\n' + ex.subject, ex.classId, schedule, ex.token, ex.duration + ' menit', ex.kkm, ex.status];
+          values.forEach(value => {
+            const td = document.createElement('td');
+            td.className = 'py-3 pr-3 whitespace-pre-line';
+            td.textContent = value || '-';
+            tr.appendChild(td);
+          });
+          const td = document.createElement('td');
+          td.className = 'py-3';
+          const edit = document.createElement('button');
+          edit.className = 'bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1 mb-1';
+          edit.textContent = 'Edit';
+          edit.onclick = () => editExam(ex);
+          const toggle = document.createElement('button');
+          toggle.className = 'bg-yellow-100 text-yellow-700 px-3 py-1 rounded-lg mr-1 mb-1';
+          toggle.textContent = ex.status === 'Active' ? 'Nonaktifkan' : 'Aktifkan';
+          toggle.onclick = () => toggleExamStatus(ex);
+          const del = document.createElement('button');
+          del.className = 'bg-red-50 text-red-600 px-3 py-1 rounded-lg mb-1';
+          del.textContent = 'Hapus';
+          del.onclick = () => deleteExam(ex);
+          td.append(edit, toggle, del);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
         });
         applyExamSubjectFilter();
-      }).withFailureHandler(err=>showToast('Gagal memuat jadwal: '+(err&&err.message?err.message:err),'error')).getAdminExams(authToken);
+      } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="8" class="py-4 text-center text-red-500">Gagal memuat jadwal ujian.</td></tr>';
+        showToast('Gagal memuat jadwal: ' + (err && err.message ? err.message : err), 'error');
+      }
     }
+
     function applyExamSubjectFilter() {
-      const selected=(document.getElementById('filterExamSubject')?.value||'').toLowerCase();
-      document.querySelectorAll('#tableExams tr[data-subject]').forEach(row=>{
-        row.classList.toggle('hide',!!selected && String(row.dataset.subject||'').toLowerCase()!==selected);
+      const selected = (document.getElementById('filterExamSubject')?.value || '').toLowerCase();
+      document.querySelectorAll('#tableExams tr[data-subject]').forEach(row => {
+        row.classList.toggle('hide', !!selected && String(row.dataset.subject || '').toLowerCase() !== selected);
       });
     }
 
     function getExamFormData() {
-      return {name:document.getElementById('exName').value.trim(),subject:document.getElementById('exSubj').value.trim(),classId:document.getElementById('exClass').value.trim(),
-        duration:document.getElementById('exDur').value,kkm:document.getElementById('exKKM').value,token:document.getElementById('exToken').value.trim(),
-        randomize:document.getElementById('exRandom').checked,startAt:document.getElementById('exStartAt').value,endAt:document.getElementById('exEndAt').value,status:'Active'};
+      return {
+        name: document.getElementById('exName').value.trim(),
+        subject: document.getElementById('exSubj').value.trim(),
+        classId: document.getElementById('exClass').value.trim(),
+        allowedClasses: document.getElementById('exClass').value.trim(),
+        duration: document.getElementById('exDur').value,
+        kkm: document.getElementById('exKKM').value,
+        token: document.getElementById('exToken').value.trim(),
+        randomize: document.getElementById('exRandom').checked,
+        startAt: document.getElementById('exStartAt').value,
+        endAt: document.getElementById('exEndAt').value,
+        status: editingExamId ? editingExamStatus : 'Active'
+      };
     }
-    function addExam(e) {
+
+    async function addExam(e) {
       e.preventDefault();
-      const data=getExamFormData();
-      if(!serverMode){showToast('Fitur penyimpanan memerlukan Google Apps Script.','error');return;}
-      const saveButton=document.getElementById('btnSaveExam');
-      saveButton.disabled=true; saveButton.innerText='Menyimpan...';
-      const finishSave=()=>{saveButton.disabled=false;saveButton.innerText=editingExamId?'Simpan Perubahan':'Simpan Ujian';};
-      const runner=google.script.run.withSuccessHandler(res=>{
-        finishSave();
-        if(!res || res.status!=='success'){showToast((res&&res.message)||'Server tidak mengonfirmasi penyimpanan jadwal.','error');return;}
-        showToast(res.message||'Jadwal disimpan.');resetExamForm();loadAdminExams();loadAdminDashboard();
-      }).withFailureHandler(err=>{finishSave();showToast('Gagal menyimpan ujian: '+(err&&err.message?err.message:err),'error');});
-      if(editingExamId)runner.apiUpdateExam(editingExamId,data,authToken);else runner.apiAddExam(data,authToken);
+      const data = getExamFormData();
+      const saveButton = document.getElementById('btnSaveExam');
+      saveButton.disabled = true;
+      saveButton.innerText = 'Menyimpan...';
+      try {
+        if (serverMode) {
+          const result = await new Promise((resolve, reject) => {
+            const runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+            if (editingExamId) runner.apiUpdateExam(editingExamId, data, authToken);
+            else runner.apiAddExam(data, authToken);
+          });
+          if (!result || result.status !== 'success') throw new Error((result && result.message) || 'Server tidak mengonfirmasi penyimpanan jadwal.');
+          showToast(result.message || 'Jadwal disimpan.');
+        } else {
+          const result = await callExamFunction({
+            action: editingExamId ? 'update' : 'create',
+            exam_id: editingExamId || undefined,
+            exam: data
+          });
+          showToast(result.message || 'Jadwal disimpan.');
+        }
+        resetExamForm();
+        await loadAdminExams();
+        loadAdminDashboard();
+      } catch (err) {
+        showToast('Gagal menyimpan ujian: ' + (err && err.message ? err.message : err), 'error');
+      } finally {
+        saveButton.disabled = false;
+        saveButton.innerText = editingExamId ? 'Simpan Perubahan' : 'Simpan Ujian';
+      }
     }
+
     function editExam(ex) {
-      editingExamId=ex.id;
-      document.getElementById('exName').value=ex.name||'';populateExamSubjectOptions([...new Set([...Array.from(document.getElementById('exSubj').options).map(o=>o.value).filter(Boolean),String(ex.subject||'').trim()])],ex.subject||'');
-      document.getElementById('exClass').value=ex.classId||'';document.getElementById('exDur').value=ex.duration||60;
-      document.getElementById('exKKM').value=ex.kkm||75;document.getElementById('exToken').value=ex.token||'';
-      document.getElementById('exRandom').checked=ex.randomize===true||String(ex.randomize).toLowerCase()==='true';
-      document.getElementById('exStartAt').value=ex.startAt||'';document.getElementById('exEndAt').value=ex.endAt||'';
-      document.getElementById('btnSaveExam').innerText='Simpan Perubahan';
+      editingExamId = ex.id;
+      editingExamStatus = ex.status || 'Active';
+      document.getElementById('exName').value = ex.name || '';
+      populateExamSubjectOptions([...new Set([...Array.from(document.getElementById('exSubj').options).map(o => o.value).filter(Boolean), String(ex.subject || '').trim()])], ex.subject || '');
+      document.getElementById('exClass').value = ex.classId || '';
+      document.getElementById('exDur').value = ex.duration || 60;
+      document.getElementById('exKKM').value = ex.kkm || 75;
+      document.getElementById('exToken').value = ex.token || '';
+      document.getElementById('exRandom').checked = ex.randomize === true || String(ex.randomize).toLowerCase() === 'true';
+      document.getElementById('exStartAt').value = toExamDateTimeInput(ex.startAt);
+      document.getElementById('exEndAt').value = toExamDateTimeInput(ex.endAt);
+      document.getElementById('btnSaveExam').innerText = 'Simpan Perubahan';
       document.getElementById('btnCancelEditExam').classList.remove('hide');
-      document.getElementById('exName').scrollIntoView({behavior:'smooth',block:'center'});
+      document.getElementById('exName').scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+
     function resetExamForm() {
-      editingExamId=null;document.querySelector('#view-admin-exams form').reset();
-      document.getElementById('btnSaveExam').innerText='Simpan Ujian';
+      editingExamId = null;
+      editingExamStatus = 'Active';
+      document.querySelector('#view-admin-exams form').reset();
+      document.getElementById('btnSaveExam').innerText = 'Simpan Ujian';
       document.getElementById('btnCancelEditExam').classList.add('hide');
     }
+
     function toggleExamStatus(ex) {
-      const next=ex.status==='Active'?'Inactive':'Active';
-      const data={name:ex.name,subject:ex.subject,classId:ex.classId,duration:ex.duration,kkm:ex.kkm,token:ex.token,randomize:ex.randomize,startAt:ex.startAt,endAt:ex.endAt,status:next};
-      showAppConfirm((next==='Active'?'Aktifkan':'Nonaktifkan')+' ujian "'+ex.name+'"?',()=>google.script.run.withSuccessHandler(res=>{showToast(res.message||'Status diperbarui.');loadAdminExams();loadAdminDashboard();})
-        .withFailureHandler(err=>showToast('Gagal mengubah status: '+(err&&err.message?err.message:err),'error')).apiUpdateExam(ex.id,data,authToken),'Ubah Status Ujian','Ya, Lanjutkan');
+      const next = ex.status === 'Active' ? 'Inactive' : 'Active';
+      showAppConfirm((next === 'Active' ? 'Aktifkan' : 'Nonaktifkan') + ' ujian "' + ex.name + '"?', async () => {
+        try {
+          if (serverMode) {
+            const data = { name: ex.name, subject: ex.subject, classId: ex.classId, duration: ex.duration, kkm: ex.kkm, token: ex.token, randomize: ex.randomize, startAt: ex.startAt, endAt: ex.endAt, status: next };
+            const result = await new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).apiUpdateExam(ex.id, data, authToken));
+            if (!result || result.status !== 'success') throw new Error((result && result.message) || 'Status ujian tidak berhasil diperbarui.');
+            showToast(result.message || 'Status diperbarui.');
+          } else {
+            const result = await callExamFunction({ action: 'set-status', exam_id: ex.id, status: next });
+            showToast(result.message || 'Status diperbarui.');
+          }
+          await loadAdminExams();
+          loadAdminDashboard();
+        } catch (err) {
+          showToast('Gagal mengubah status: ' + (err && err.message ? err.message : err), 'error');
+        }
+      }, 'Ubah Status Ujian', 'Ya, Lanjutkan');
     }
+
     function deleteExam(ex) {
-      showAppConfirm('Ujian "'+ex.name+'" akan dihapus. Data ujian tidak dapat dikembalikan.',()=>google.script.run.withSuccessHandler(res=>{showToast(res.message||'Ujian dihapus.');loadAdminExams();loadAdminDashboard();})
-        .withFailureHandler(err=>showToast('Gagal menghapus ujian: '+(err&&err.message?err.message:err),'error')).apiDeleteExam(ex.id,authToken),'Hapus Ujian','Ya, Hapus');
+      showAppConfirm('Ujian "' + ex.name + '" akan dihapus. Data ujian tidak dapat dikembalikan.', async () => {
+        try {
+          if (serverMode) {
+            const result = await new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).apiDeleteExam(ex.id, authToken));
+            if (!result || result.status !== 'success') throw new Error((result && result.message) || 'Ujian tidak berhasil dihapus.');
+            showToast(result.message || 'Ujian dihapus.');
+          } else {
+            const result = await callExamFunction({ action: 'delete', exam_id: ex.id });
+            showToast(result.message || 'Ujian dihapus.');
+          }
+          await loadAdminExams();
+          loadAdminDashboard();
+        } catch (err) {
+          showToast('Gagal menghapus ujian: ' + (err && err.message ? err.message : err), 'error');
+        }
+      }, 'Hapus Ujian', 'Ya, Hapus');
     }
+
     function loadMonitor() {
       if(!currentUser || currentUser.role !== 'admin') { showToast('Monitor Sesi Aktif hanya dapat diakses Admin.','error'); return; }
       switchView('view-admin-monitor','Monitor Sesi Aktif');
