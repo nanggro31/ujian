@@ -852,7 +852,7 @@ body::after{
         <label class="text-sm">Pilihan B<input id="qOptB" required class="border p-3 rounded-xl w-full mt-1"></label>
         <label class="text-sm">Pilihan C<input id="qOptC" required class="border p-3 rounded-xl w-full mt-1"></label>
         <label class="text-sm">Pilihan D<input id="qOptD" required class="border p-3 rounded-xl w-full mt-1"></label>
-        <label class="text-sm">Pilihan E<input id="qOptE" required class="border p-3 rounded-xl w-full mt-1"></label>
+        <label class="text-sm">Pilihan E <span class="text-xs text-gray-500">(wajib untuk SMA, opsional untuk SMP)</span><input id="qOptE" class="border p-3 rounded-xl w-full mt-1"></label>
         <label class="text-sm">Jenis Soal<select id="qType" class="border p-3 rounded-xl w-full mt-1"><option value="PG">Pilihan Ganda (PG)</option><option value="MCMA">MCMA</option></select></label>
         <label class="text-sm md:col-span-2">Kunci Jawaban <span id="qKeyHint" class="text-xs text-gray-500">(pilih satu jawaban benar)</span><select id="qAnswerKey" required class="border p-3 rounded-xl w-full mt-1"><option value="">Pilih jawaban benar</option></select></label>
         <div class="md:col-span-2 flex justify-end gap-3"><button type="button" onclick="closeRecordModal()" class="px-5 py-3 bg-gray-100 rounded-xl">Batal</button><button id="btnSaveQuestion" class="px-5 py-3 bg-primary text-white rounded-xl font-semibold">Simpan Soal</button></div>
@@ -1366,6 +1366,11 @@ function downloadTemplate(jenjang) {
             };
             if (!question.subject || !question.text) throw new Error(`Baris ${index + 2}: mata pelajaran dan teks soal wajib diisi.`);
             if ([question.optA, question.optB, question.optC, question.optD].some(v => !v)) throw new Error(`Baris ${index + 2}: pilihan A sampai D wajib diisi.`);
+            const normalizedClass = String(question.classId || 'Semua').toUpperCase().replace(/\s+/g, '-');
+            const isSMP = /^(VII|VIII|IX)(-|$)/.test(normalizedClass);
+            const isSMA = /^(XII|XI|X)(-|$)/.test(normalizedClass);
+            if (!isSMP && !question.optE) throw new Error(`Baris ${index + 2}: pilihan E wajib diisi untuk soal SMA atau kelas Semua.`);
+            if (question.classId.toLowerCase() !== 'semua' && !isSMP && !isSMA) throw new Error(`Baris ${index + 2}: format kelas tidak dikenali. Gunakan VII-A sampai IX-A untuk SMP atau X-A sampai XII-A untuk SMA.`);
             if (!['PG', 'MCMA'].includes(type)) throw new Error(`Baris ${index + 2}: QuestionType harus PG atau MCMA.`);
             if (!rawKey || (type === 'MCMA' && answerKey === '[]')) throw new Error(`Baris ${index + 2}: kunci jawaban belum diisi dengan benar.`);
             if (type === 'PG' && rawKey.includes('|')) throw new Error(`Baris ${index + 2}: soal PG hanya boleh memiliki satu kunci jawaban.`);
@@ -2256,19 +2261,18 @@ function tampilkanFooterHakcipta(tampilkan) {
         };
 
         if (!question.subject || !question.text) throw new Error('Mata pelajaran dan teks soal wajib diisi.');
-        const normalizedClass = String(question.classId || 'Semua')
-  .toUpperCase()
-  .replace(/\s+/g, '-');
-
-const isSMP = /^(VII|VIII|IX)(-|$)/.test(normalizedClass);
-
-if ([question.optA, question.optB, question.optC, question.optD].some(value => !value)) {
-  throw new Error('Pilihan jawaban A sampai D wajib diisi.');
-}
-
-if (!isSMP && !question.optE) {
-  throw new Error('Pilihan jawaban E wajib diisi untuk soal SMA.');
-}
+        if ([question.optA, question.optB, question.optC, question.optD].some(value => !value)) {
+          throw new Error('Pilihan jawaban A sampai D wajib diisi.');
+        }
+        const normalizedClass = String(question.classId || 'Semua').toUpperCase().replace(/\s+/g, '-');
+        const isSMP = /^(VII|VIII|IX)(-|$)/.test(normalizedClass);
+        const isSMA = /^(XII|XI|X)(-|$)/.test(normalizedClass);
+        if (!isSMP && !question.optE) {
+          throw new Error('Pilihan jawaban E wajib diisi untuk soal SMA atau kelas Semua.');
+        }
+        if (String(question.classId).toLowerCase() !== 'semua' && !isSMP && !isSMA) {
+          throw new Error('Format kelas tidak dikenali. Gunakan VII-A sampai IX-A untuk SMP atau X-A sampai XII-A untuk SMA.');
+        }
         if (!Number.isFinite(question.points) || question.points <= 0) throw new Error('Bobot soal harus lebih dari 0.');
 
         const result = await callQuestionFunction({
