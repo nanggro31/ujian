@@ -1522,18 +1522,65 @@ function downloadTemplate(jenjang) {
 
    
  // --- Admin Functions ---
- function loadAdminDashboard() {
+ async function loadAdminDashboard() {
    switchView('view-admin-dashboard', 'Dashboard');
 
    // Sembunyikan footer saat dashboard admin dibuka
    tampilkanFooterHakcipta(false);
 
-   if(serverMode) google.script.run.withSuccessHandler(data => {
-     document.getElementById('statStudents').innerText = data.students;
-     document.getElementById('statQuestions').innerText = data.questions;
-     document.getElementById('statExams').innerText = data.exams;
-     document.getElementById('statOnline').innerText = data.online;
-   }).withFailureHandler(err => showToast('Gagal memuat dashboard: ' + (err && err.message ? err.message : err), 'error')).getAdminDashboardData(authToken);
+   const statIds = ['statStudents', 'statQuestions', 'statExams', 'statOnline'];
+   statIds.forEach(id => {
+     const el = document.getElementById(id);
+     if (el) el.innerText = '...';
+   });
+
+   try {
+     // Mode GAS lama tetap dipertahankan selama proses migrasi.
+     if (serverMode) {
+       google.script.run.withSuccessHandler(data => {
+         document.getElementById('statStudents').innerText = data.students ?? 0;
+         document.getElementById('statQuestions').innerText = data.questions ?? 0;
+         document.getElementById('statExams').innerText = data.exams ?? 0;
+         document.getElementById('statOnline').innerText = data.online ?? 0;
+       }).withFailureHandler(err => showToast('Gagal memuat dashboard: ' + (err && err.message ? err.message : err), 'error')).getAdminDashboardData(authToken);
+       return;
+     }
+
+     // Mode GitHub Pages menggunakan Supabase Edge Function.
+     if (!window.supabaseClient || typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_PUBLISHABLE_KEY === 'undefined') {
+       throw new Error('Konfigurasi Supabase belum tersedia. Periksa js/supabase.js.');
+     }
+     if (!authToken) {
+       throw new Error('Sesi login tidak ditemukan. Silakan login kembali.');
+     }
+
+     const response = await fetch(`${SUPABASE_URL}/functions/v1/admin-dashboard`, {
+       method: 'POST',
+       headers: {
+         'Content-Type': 'application/json',
+         'apikey': SUPABASE_PUBLISHABLE_KEY,
+         'Authorization': `Bearer ${authToken}`
+       },
+       body: JSON.stringify({})
+     });
+
+     const result = await response.json().catch(() => ({}));
+     if (!response.ok || !result.success || !result.dashboard) {
+       throw new Error(result.message || `Gagal memuat dashboard. Kode server: ${response.status}`);
+     }
+
+     document.getElementById('statStudents').innerText = result.dashboard.students ?? 0;
+     document.getElementById('statQuestions').innerText = result.dashboard.questions ?? 0;
+     document.getElementById('statExams').innerText = result.dashboard.exams ?? 0;
+     document.getElementById('statOnline').innerText = result.dashboard.online ?? 0;
+   } catch (err) {
+     console.error('Gagal memuat dashboard:', err);
+     statIds.forEach(id => {
+       const el = document.getElementById(id);
+       if (el) el.innerText = '0';
+     });
+     showToast('Gagal memuat dashboard: ' + (err && err.message ? err.message : 'Kesalahan koneksi.'), 'error');
+   }
  }
 function tampilkanFooterHakcipta(tampilkan) {
     const footer = document.getElementById('footerHakcipta');
