@@ -1,0 +1,28 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistem Ujian Online SMA - V2</title>
+</head>
+<body>
+    <h1>SISTEM UJIAN ONLINE SMA - V2</h1>
+    <p>Halaman utama aplikasi ujian online.</p>
+
+    <p id="status">Memuat konfigurasi Supabase...</p>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/supabase.js"></script>
+
+    <script>
+        if (window.supabaseClient) {
+            document.getElementById('status').textContent =
+                'Konfigurasi Supabase berhasil dimuat.';
+        } else {
+            document.getElementById('status').textContent =
+                'Koneksi Supabase gagal dimuat.';
+        }
+    </script>
+</body>
+</html>
