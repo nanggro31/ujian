@@ -2046,11 +2046,20 @@ function tampilkanFooterHakcipta(tampilkan) {
       }
     }
     function renderQuestionRows(active){const tbody=document.getElementById('tableQuestions');tbody.innerHTML='';if(!active.length){tbody.innerHTML='<tr><td colspan="6" class="py-4 text-center text-gray-400">Tidak ada soal sesuai filter.</td></tr>';return;}active.forEach(q=>{const tr=document.createElement('tr');tr.className='border-b border-gray-100';[q.id,q.subject,q.classId||'Semua',q.text,q.points].forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v==null?'-':v;tr.appendChild(td);});const td=document.createElement('td');td.className='py-3 whitespace-nowrap';const edit=document.createElement('button');edit.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1';edit.textContent='Edit';edit.onclick=()=>openQuestionForm(q);const del=document.createElement('button');del.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg';del.textContent='Hapus';del.onclick=()=>deleteQuestion(q);td.append(edit,del);tr.appendChild(td);tbody.appendChild(tr);});}
-    function loadAdminQuestions() {
-      switchView('view-admin-questions','Bank Soal'); const tbody=document.getElementById('tableQuestions');tbody.innerHTML='<tr><td colspan="6" class="py-4 text-center text-gray-400">Memuat bank soal...</td></tr>';
-      if(!serverMode){tbody.innerHTML='<tr><td colspan="5" class="py-4 text-center text-gray-400">Hubungkan aplikasi ke Google Apps Script untuk memuat data.</td></tr>';return;}
-      google.script.run.withSuccessHandler(list=>{cachedAdminQuestions=(list||[]).filter(q=>q.answerKey);populateQuestionFilterOptions();applyQuestionFilters();
-      }).withFailureHandler(err=>showToast('Gagal memuat bank soal: '+(err&&err.message?err.message:err),'error')).getAdminQuestions(authToken);
+    async function loadAdminQuestions() {
+      switchView('view-admin-questions', 'Bank Soal');
+      const tbody = document.getElementById('tableQuestions');
+      tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">Memuat bank soal...</td></tr>';
+      try {
+        const result = await callQuestionFunction({ action: 'list' });
+        cachedAdminQuestions = (result.questions || []).filter(q => q && q.answerKey);
+        populateQuestionFilterOptions();
+        applyQuestionFilters();
+      } catch (err) {
+        console.error('Gagal memuat bank soal dari Supabase:', err);
+        tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-red-500">Gagal memuat bank soal dari Supabase.</td></tr>';
+        showToast('Gagal memuat bank soal: ' + (err && err.message ? err.message : err), 'error');
+      }
     }
     function updateQuestionKeyOptions(selected) {
       const sel=document.getElementById('qAnswerKey'), values=['qOptA','qOptB','qOptC','qOptD','qOptE'].map(id=>document.getElementById(id).value.trim()).filter(Boolean);
@@ -2130,24 +2139,80 @@ function tampilkanFooterHakcipta(tampilkan) {
       }));
     }
     async function saveQuestion(e) {
-      e.preventDefault();if(!serverMode)return showToast('Penyimpanan membutuhkan Google Apps Script.','error');
-      const btn=document.getElementById('btnSaveQuestion');btn.disabled=true;btn.innerText='Menyimpan...';
+      e.preventDefault();
+      const btn = document.getElementById('btnSaveQuestion');
+      btn.disabled = true;
+      btn.innerText = 'Menyimpan...';
       try {
-        let imageUrl=document.getElementById('qImageUrl').value.trim();
-        const imageFile=document.getElementById('qImageFile').files[0];
-        if(imageFile) { btn.innerText='Mengunggah gambar ke Google Drive...'; imageUrl=await uploadQuestionImage(imageFile); if(!imageUrl) throw new Error('URL gambar dari Google Drive kosong.'); document.getElementById('qImageUrl').value=imageUrl; document.getElementById('qImagePreview').src=imageUrl; document.getElementById('qImagePreview').classList.remove('hide'); btn.innerText='Menyimpan soal...'; }
-        const data={subject:document.getElementById('qSubject').value.trim(),text:document.getElementById('qText').value.trim(),
-          optA:document.getElementById('qOptA').value.trim(),optB:document.getElementById('qOptB').value.trim(),
-          optC:document.getElementById('qOptC').value.trim(),optD:document.getElementById('qOptD').value.trim(),
-          optE:document.getElementById('qOptE').value.trim(),questionType:document.getElementById('qType').value,
-          answerKey:Array.from(document.getElementById('qAnswerKey').selectedOptions).map(o=>o.value),
-          points:document.getElementById('qPoints').value,imageUrl,classId:document.getElementById('qClassId').value||'Semua'};
-        const runner=google.script.run.withSuccessHandler(r=>{btn.disabled=false;showToast(r.message||'Soal tersimpan.');closeRecordModal();loadAdminQuestions();loadAdminDashboard();})
-          .withFailureHandler(err=>{btn.disabled=false;btn.innerText=editingQuestionId?'Simpan Perubahan':'Simpan Soal';showToast('Gagal menyimpan soal: '+(err&&err.message?err.message:err),'error');});
-        if(editingQuestionId)runner.apiUpdateQuestion(editingQuestionId,data,authToken);else runner.apiAddQuestion(data,authToken);
-      } catch(err) {btn.disabled=false;btn.innerText=editingQuestionId?'Simpan Perubahan':'Simpan Soal';showToast('Gagal upload gambar: '+err.message,'error');}
+        const imageUrl = document.getElementById('qImageUrl').value.trim();
+        const imageFile = document.getElementById('qImageFile').files[0];
+        if (imageFile) {
+          throw new Error('Unggah gambar dari perangkat belum terhubung ke Supabase. Untuk sementara, kosongkan pilihan file dan masukkan URL gambar pada kolom URL Gambar.');
+        }
+
+        const selectedAnswers = Array.from(document.getElementById('qAnswerKey').selectedOptions).map(option => option.value);
+        const questionType = document.getElementById('qType').value;
+        if (!selectedAnswers.length) throw new Error('Pilih kunci jawaban terlebih dahulu.');
+        if (questionType === 'PG' && selectedAnswers.length !== 1) throw new Error('Soal PG harus memiliki tepat satu jawaban benar.');
+        if (questionType !== 'PG' && selectedAnswers.length < 2) throw new Error('Soal pilihan kompleks harus memiliki minimal dua jawaban benar.');
+
+        const question = {
+          subject: document.getElementById('qSubject').value.trim(),
+          text: document.getElementById('qText').value.trim(),
+          optA: document.getElementById('qOptA').value.trim(),
+          optB: document.getElementById('qOptB').value.trim(),
+          optC: document.getElementById('qOptC').value.trim(),
+          optD: document.getElementById('qOptD').value.trim(),
+          optE: document.getElementById('qOptE').value.trim(),
+          questionType,
+          answerKey: questionType === 'PG' ? selectedAnswers[0] : JSON.stringify(selectedAnswers),
+          points: Number(document.getElementById('qPoints').value),
+          imageUrl,
+          classId: document.getElementById('qClassId').value || 'Semua'
+        };
+
+        if (!question.subject || !question.text) throw new Error('Mata pelajaran dan teks soal wajib diisi.');
+        if ([question.optA, question.optB, question.optC, question.optD, question.optE].some(value => !value)) {
+          throw new Error('Pilihan jawaban A sampai E wajib diisi.');
+        }
+        if (!Number.isFinite(question.points) || question.points <= 0) throw new Error('Bobot soal harus lebih dari 0.');
+
+        const result = await callQuestionFunction({
+          action: editingQuestionId ? 'update' : 'create',
+          ...(editingQuestionId ? { question_id: editingQuestionId } : {}),
+          question
+        });
+        showToast(result.message || (editingQuestionId ? 'Soal berhasil diperbarui.' : 'Soal berhasil ditambahkan.'));
+        closeRecordModal();
+        await loadAdminQuestions();
+        await loadAdminDashboard();
+      } catch (err) {
+        console.error('Gagal menyimpan soal:', err);
+        showToast('Gagal menyimpan soal: ' + (err && err.message ? err.message : err), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerText = editingQuestionId ? 'Simpan Perubahan' : 'Simpan Soal';
+      }
     }
-    function deleteQuestion(q){showAppConfirm('Soal ini akan dinonaktifkan dan tidak digunakan pada ujian baru. Riwayat ujian sebelumnya tetap dipertahankan. Lanjutkan?',()=>google.script.run.withSuccessHandler(r=>{showToast(r.message||'Soal dinonaktifkan.');loadAdminQuestions();loadAdminDashboard();}).withFailureHandler(err=>showToast('Gagal menghapus soal: '+(err&&err.message?err.message:err),'error')).apiDeleteQuestion(q.id,authToken),'Nonaktifkan Soal','Ya, Nonaktifkan');}
+
+    function deleteQuestion(q) {
+      showAppConfirm(
+        'Soal ini akan dinonaktifkan dan tidak digunakan pada ujian baru. Riwayat ujian sebelumnya tetap dipertahankan. Lanjutkan?',
+        async () => {
+          try {
+            const result = await callQuestionFunction({ action: 'delete', question_id: q.id });
+            showToast(result.message || 'Soal berhasil dinonaktifkan.');
+            await loadAdminQuestions();
+            await loadAdminDashboard();
+          } catch (err) {
+            showToast('Gagal menghapus soal: ' + (err && err.message ? err.message : err), 'error');
+          }
+        },
+        'Nonaktifkan Soal',
+        'Ya, Nonaktifkan'
+      );
+    }
+
 
     async function loadClassOptions(selectId, selectedValue, includeAll=false) {
       const sel = document.getElementById(selectId);
