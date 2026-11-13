@@ -2256,9 +2256,19 @@ function tampilkanFooterHakcipta(tampilkan) {
         };
 
         if (!question.subject || !question.text) throw new Error('Mata pelajaran dan teks soal wajib diisi.');
-        if ([question.optA, question.optB, question.optC, question.optD, question.optE].some(value => !value)) {
-          throw new Error('Pilihan jawaban A sampai E wajib diisi.');
-        }
+        const normalizedClass = String(question.classId || 'Semua')
+  .toUpperCase()
+  .replace(/\s+/g, '-');
+
+const isSMP = /^(VII|VIII|IX)(-|$)/.test(normalizedClass);
+
+if ([question.optA, question.optB, question.optC, question.optD].some(value => !value)) {
+  throw new Error('Pilihan jawaban A sampai D wajib diisi.');
+}
+
+if (!isSMP && !question.optE) {
+  throw new Error('Pilihan jawaban E wajib diisi untuk soal SMA.');
+}
         if (!Number.isFinite(question.points) || question.points <= 0) throw new Error('Bobot soal harus lebih dari 0.');
 
         const result = await callQuestionFunction({
