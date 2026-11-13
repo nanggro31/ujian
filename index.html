@@ -770,7 +770,7 @@ body::after{
 }
 
   </style>
-  <!-- Supabase JS client: dimuat sebelum kode aplikasi -->
+  <!-- Supabase JS client dan konfigurasi koneksi -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./js/supabase.js"></script>
 </head>
@@ -1333,37 +1333,61 @@ function downloadTemplate(jenjang) {
       reader.readAsArrayBuffer(file);
     }
 
-    // Auth
-    function handleLogin(e) {
+    // Auth - integrasi login menggunakan Supabase Edge Function
+    async function handleLogin(e) {
       e.preventDefault();
-      const u = document.getElementById('username').value;
+      const u = document.getElementById('username').value.trim();
       const p = document.getElementById('password').value;
-      document.getElementById('btnLogin').disabled = true;
-      document.getElementById('btnLogin').innerText = 'Memproses...';
-      
-      if (serverMode) {
-        google.script.run.withSuccessHandler(res => {
-          document.getElementById('btnLogin').disabled = false;
-          document.getElementById('btnLogin').innerText = 'Masuk Sekarang';
-          if(res.status === 'success') {
-            // processLogin sudah mengembalikan data pengguna. Tidak perlu memanggil
-            // apiRestoreLogin lagi pada login baru; itu menghindari satu perjalanan server.
-            authToken = res.authToken;
-            sessionStorage.setItem('cbt_auth_token', authToken);
-            currentUser = res.user;
-            pendingRestoredSession = null;
-            initApp();
-          } else showToast(res.message, 'error');
-        }).withFailureHandler(err => {
-          document.getElementById('btnLogin').disabled = false;
-          document.getElementById('btnLogin').innerText = 'Masuk Sekarang';
-          showToast('Login gagal: ' + (err && err.message ? err.message : err), 'error');
-        }).processLogin(u, p);
-      } else {
-        // Login simulasi dinonaktifkan selama migrasi ke Supabase.
-        document.getElementById('btnLogin').disabled = false;
-        document.getElementById('btnLogin').innerText = 'Masuk Sekarang';
-        showToast('Login Supabase sedang disiapkan. Silakan tunggu tahap integrasi berikutnya.', 'error');
+      const btn = document.getElementById('btnLogin');
+      btn.disabled = true;
+      btn.innerText = 'Memproses...';
+
+      try {
+        if (!window.supabaseClient || typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_PUBLISHABLE_KEY === 'undefined') {
+          throw new Error('Konfigurasi Supabase belum berhasil dimuat. Periksa file js/supabase.js.');
+        }
+
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/login-username`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_PUBLISHABLE_KEY
+          },
+          body: JSON.stringify({ username: u, password: p })
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success || !result.session || !result.profile) {
+          throw new Error(result.message || `Login gagal. Kode server: ${response.status}`);
+        }
+
+        // Simpan sesi pada Supabase Auth agar token dapat diperbarui oleh SDK.
+        const { data: authData, error: sessionError } = await window.supabaseClient.auth.setSession({
+          access_token: result.session.access_token,
+          refresh_token: result.session.refresh_token
+        });
+        if (sessionError) throw sessionError;
+
+        const profile = result.profile;
+        currentUser = {
+          id: profile.legacy_user_id || profile.id,
+          authId: profile.id,
+          username: profile.username,
+          role: String(profile.role || '').toLowerCase(),
+          name: profile.full_name || profile.username,
+          classId: profile.class_id || ''
+        };
+        authToken = authData.session ? authData.session.access_token : result.session.access_token;
+        sessionStorage.setItem('cbt_auth_token', authToken);
+        sessionStorage.setItem('cbt_user_profile', JSON.stringify(currentUser));
+        pendingRestoredSession = null;
+        initApp();
+      } catch (err) {
+        console.error('Login Supabase gagal:', err);
+        showToast('Login gagal: ' + (err && err.message ? err.message : 'Terjadi kesalahan koneksi.'), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Masuk Sekarang';
       }
     }
 
@@ -1374,6 +1398,8 @@ function downloadTemplate(jenjang) {
       }
       clearInterval(monitorPollInt); monitorPollInt=null; previousMonitorStatuses={};
       if (serverMode && authToken) google.script.run.withFailureHandler(()=>{}).apiLogout(authToken, activeExam.id ? activeSessionId : '');
+      if (!serverMode && window.supabaseClient) window.supabaseClient.auth.signOut().catch(err => console.warn('Supabase signOut:', err));
+      sessionStorage.removeItem('cbt_user_profile');
       sessionStorage.removeItem('cbt_auth_token');
       sessionStorage.removeItem('cbt_active_view');
       sessionStorage.removeItem('cbt_student_view');
@@ -1390,23 +1416,39 @@ function downloadTemplate(jenjang) {
 
     // Pulihkan autentikasi setelah reload pada tab yang sama.
     // Jika sesi ujian masih Active, langsung kembalikan siswa ke ruang ujian.
-    function restoreLoginAfterReload() {
-      if (!serverMode) return;
-      const savedToken = sessionStorage.getItem('cbt_auth_token');
-      if (!savedToken) return;
-      authToken = savedToken;
-      google.script.run.withSuccessHandler(state => {
-        if (!state || state.status !== 'success' || !state.user) throw new Error('Sesi login tidak valid.');
-        currentUser = state.user;
-        pendingRestoredSession = state.activeSession || null;
+    async function restoreLoginAfterReload() {
+      if (serverMode) {
+        const savedToken = sessionStorage.getItem('cbt_auth_token');
+        if (!savedToken) return;
+        authToken = savedToken;
+        google.script.run.withSuccessHandler(state => {
+          if (!state || state.status !== 'success' || !state.user) throw new Error('Sesi login tidak valid.');
+          currentUser = state.user;
+          pendingRestoredSession = state.activeSession || null;
+          initApp();
+        }).withFailureHandler(() => {
+          sessionStorage.removeItem('cbt_auth_token');
+          authToken = null; currentUser = null; pendingRestoredSession = null;
+          document.getElementById('page-login').classList.remove('hide');
+          document.getElementById('page-app').classList.add('hide');
+          tampilkanFooterHakcipta(true);
+        }).apiRestoreLogin(savedToken);
+        return;
+      }
+
+      try {
+        if (!window.supabaseClient) return;
+        const { data, error } = await window.supabaseClient.auth.getSession();
+        if (error || !data.session) return;
+        const savedProfile = sessionStorage.getItem('cbt_user_profile');
+        if (!savedProfile) return;
+        currentUser = JSON.parse(savedProfile);
+        authToken = data.session.access_token;
+        sessionStorage.setItem('cbt_auth_token', authToken);
         initApp();
-      }).withFailureHandler(() => {
-        sessionStorage.removeItem('cbt_auth_token');
-        authToken = null; currentUser = null; pendingRestoredSession = null;
-        document.getElementById('page-login').classList.remove('hide');
-        document.getElementById('page-app').classList.add('hide');
-        tampilkanFooterHakcipta(true);
-      }).apiRestoreLogin(savedToken);
+      } catch (err) {
+        console.warn('Pemulihan sesi Supabase dilewati:', err);
+      }
     }
 
     // Init Layout
