@@ -1313,34 +1313,100 @@ function downloadTemplate(jenjang) {
 
 
 
-    function processUpload() {
-      const input=document.getElementById('fileUpload'), file=input.files && input.files[0];
-      if(!file)return showToast('Pilih file terlebih dahulu!','error');
-      if(typeof XLSX==='undefined')return showToast('Pustaka Excel belum dimuat. Periksa koneksi internet.','error');
-      if(!serverMode)return showToast('Upload harus dilakukan melalui aplikasi Google Apps Script agar data tersimpan.','error');
-      const button=document.querySelector('#globalModal button[onclick="processUpload()"]');
-      if(button){button.disabled=true;button.innerText='Memproses...';}
-      const reset=()=>{if(button){button.disabled=false;button.innerText='Upload';}};
-      const reader=new FileReader();
-      reader.onload=function(ev){
-        try{
-          const wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'});
-          const sheet=wb.Sheets[wb.SheetNames[0]];
-          const rows=XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',raw:false});
-          if(!rows||rows.length<2){reset();showToast('File belum berisi data. Isi template mulai baris kedua.','error');return;}
-          google.script.run.withSuccessHandler(res=>{
-            reset();
-            if(res&&res.status==='success'){
-              showToast(res.message||'Data berhasil disimpan.');closeModal();input.value='';
-              if(currentUploadType==='Siswa')loadAdminStudents();else loadAdminQuestions();
-              loadAdminDashboard();
-            }else showToast((res&&res.message)||'Data gagal disimpan.','error');
-          }).withFailureHandler(err=>{reset();showToast('Upload gagal: '+(err&&err.message?err.message:err),'error');})
-            .apiBulkUpload(currentUploadType,rows,authToken);
-        }catch(err){reset();showToast('File tidak dapat dibaca. Gunakan template Excel (.xlsx) dari aplikasi.','error');}
-      };
-      reader.onerror=function(){reset();showToast('Gagal membaca file.','error');};
-      reader.readAsArrayBuffer(file);
+    async function processUpload() {
+      const input = document.getElementById('fileUpload');
+      const file = input.files && input.files[0];
+      if (!file) return showToast('Pilih file terlebih dahulu!', 'error');
+      if (typeof XLSX === 'undefined') return showToast('Pustaka Excel belum dimuat. Periksa koneksi internet.', 'error');
+
+      const button = document.querySelector('#globalModal button[onclick="processUpload()"]');
+      const reset = () => { if (button) { button.disabled = false; button.innerText = 'Upload'; } };
+      if (button) { button.disabled = true; button.innerText = 'Memproses...'; }
+
+      try {
+        const rows = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = ev => {
+            try {
+              const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+              const sheet = wb.Sheets[wb.SheetNames[0]];
+              resolve(XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false }));
+            } catch (err) { reject(new Error('File tidak dapat dibaca. Gunakan template Excel dari aplikasi.')); }
+          };
+          reader.onerror = () => reject(new Error('Gagal membaca file.'));
+          reader.readAsArrayBuffer(file);
+        });
+
+        if (!rows || !rows.length) throw new Error('File belum berisi data. Isi template mulai baris kedua.');
+
+        // Bank Soal diimpor langsung ke Supabase; tidak lagi memakai Google Apps Script.
+        if (currentUploadType === 'Soal') {
+          const clean = value => String(value == null ? '' : value).trim();
+          const normalized = rows.filter(row => Object.values(row).some(value => clean(value) !== '')).map((row, index) => {
+            const classRaw = clean(row.ClassID || row.class_id || 'Semua');
+            const classId = /^semua$/i.test(classRaw) ? 'Semua' : classRaw.replace(/\s+/g, '-');
+            const type = clean(row.QuestionType || row.question_type || 'PG').toUpperCase();
+            const rawKey = clean(row.AnswerKey || row.answer_key);
+            const answerKey = type === 'PG'
+              ? rawKey
+              : JSON.stringify(rawKey.split('|').map(v => v.trim()).filter(Boolean));
+            const question = {
+              subject: clean(row.SubjectID || row.subject || row.subject_id),
+              text: clean(row.QuestionText || row.question_text || row.text),
+              optA: clean(row.OptA || row.opt_a),
+              optB: clean(row.OptB || row.opt_b),
+              optC: clean(row.OptC || row.opt_c),
+              optD: clean(row.OptD || row.opt_d),
+              optE: clean(row.OptE || row.opt_e),
+              answerKey,
+              questionType: type,
+              points: clean(row.Points || row.points) === '' ? 1 : Number(row.Points || row.points),
+              classId,
+              imageUrl: clean(row.ImageURL || row.image_url)
+            };
+            if (!question.subject || !question.text) throw new Error(`Baris ${index + 2}: mata pelajaran dan teks soal wajib diisi.`);
+            if ([question.optA, question.optB, question.optC, question.optD].some(v => !v)) throw new Error(`Baris ${index + 2}: pilihan A sampai D wajib diisi.`);
+            if (!['PG', 'MCMA'].includes(type)) throw new Error(`Baris ${index + 2}: QuestionType harus PG atau MCMA.`);
+            if (!rawKey || (type === 'MCMA' && answerKey === '[]')) throw new Error(`Baris ${index + 2}: kunci jawaban belum diisi dengan benar.`);
+            if (type === 'PG' && rawKey.includes('|')) throw new Error(`Baris ${index + 2}: soal PG hanya boleh memiliki satu kunci jawaban.`);
+            if (type === 'MCMA' && JSON.parse(answerKey).length < 2) throw new Error(`Baris ${index + 2}: soal MCMA perlu minimal dua kunci jawaban dipisahkan tanda |.`);
+            if (!Number.isFinite(question.points) || question.points <= 0) throw new Error(`Baris ${index + 2}: Points harus berupa angka lebih dari 0.`);
+            return question;
+          });
+          if (!normalized.length) throw new Error('Tidak ada baris soal yang dapat diimpor.');
+
+          let saved = 0;
+          for (const question of normalized) {
+            await callQuestionFunction({ action: 'create', question });
+            saved++;
+          }
+          showToast(`${saved} soal berhasil diimpor ke Supabase.`);
+          closeModal();
+          input.value = '';
+          await loadAdminQuestions();
+          await loadAdminDashboard();
+          return;
+        }
+
+        // Upload data siswa masih menggunakan jalur GAS lama sampai modul tersebut dimigrasikan.
+        if (!serverMode) throw new Error('Upload massal siswa belum dimigrasikan ke Supabase. Fitur ini akan diperbaiki pada tahap Data Siswa.');
+        const legacyRows = [Object.keys(rows[0]), ...rows.map(row => Object.values(row))];
+        google.script.run.withSuccessHandler(async res => {
+          reset();
+          if (res && res.status === 'success') {
+            showToast(res.message || 'Data berhasil disimpan.');
+            closeModal(); input.value = '';
+            if (currentUploadType === 'Siswa') await loadAdminStudents();
+            await loadAdminDashboard();
+          } else showToast((res && res.message) || 'Data gagal disimpan.', 'error');
+        }).withFailureHandler(err => {
+          reset(); showToast('Upload gagal: ' + (err && err.message ? err.message : err), 'error');
+        }).apiBulkUpload(currentUploadType, legacyRows, authToken);
+      } catch (err) {
+        showToast('Upload gagal: ' + (err && err.message ? err.message : err), 'error');
+      } finally {
+        reset();
+      }
     }
 
     // Auth - integrasi login menggunakan Supabase Edge Function
