@@ -815,7 +815,7 @@ body::after{
       <form id="studentRecordForm" class="hide grid grid-cols-1 md:grid-cols-2 gap-4" onsubmit="saveStudent(event)">
         <label class="text-sm">Username / NIS<input id="stUsername" required class="border p-3 rounded-xl w-full mt-1"></label>
         <label class="text-sm">Nama Siswai<input id="stName" required class="border p-3 rounded-xl w-full mt-1"></label>
-        <label class="text-sm">Kelas<input id="stClass" required class="border p-3 rounded-xl w-full mt-1"></label>
+        <label class="text-sm">Kelas<select id="stClass" required class="border p-3 rounded-xl w-full mt-1"><option value="">Memuat kelas...</option></select></label>
         <label class="text-sm">Password <span class="text-xs text-gray-400">(kosongkan saat edit jika tidak diganti)</span><input id="stPassword" type="password" class="border p-3 rounded-xl w-full mt-1"></label>
         <label class="text-sm">Status<select id="stStatus" class="border p-3 rounded-xl w-full mt-1"><option value="Active">Aktif</option><option value="Inactive">Nonaktif</option></select></label>
         <div class="md:col-span-2 flex justify-end gap-3"><button type="button" onclick="closeRecordModal()" class="px-5 py-3 bg-gray-100 rounded-xl">Batal</button><button id="btnSaveStudent" class="px-5 py-3 bg-primary text-white rounded-xl font-semibold">Simpan Siswa</button></div>
@@ -1770,33 +1770,177 @@ function tampilkanFooterHakcipta(tampilkan) {
       }
     }
 
-    function loadAdminStudents() {
+    async function callStudentFunction(payload, functionName = 'manage-students') {
+      if (!window.supabaseClient || typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_PUBLISHABLE_KEY === 'undefined') {
+        throw new Error('Konfigurasi Supabase belum tersedia. Periksa js/supabase.js.');
+      }
+      const { data: sessionData, error: sessionError } = await window.supabaseClient.auth.getSession();
+      if (sessionError) throw sessionError;
+      const accessToken = sessionData && sessionData.session ? sessionData.session.access_token : authToken;
+      if (!accessToken) throw new Error('Sesi login tidak ditemukan. Silakan login kembali.');
+      authToken = accessToken;
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_PUBLISHABLE_KEY,
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || `Permintaan siswa gagal. Kode server: ${response.status}`);
+      }
+      return result;
+    }
+
+    async function loadStudentClassOptions(selectedValue = '') {
+      const select = document.getElementById('stClass');
+      select.innerHTML = '<option value="">Memuat kelas...</option>';
+      const result = await callClassFunction({ action: 'list' });
+      const activeClasses = (result.classes || []).filter(item => item.status === 'Active');
+      select.innerHTML = '<option value="">Pilih kelas</option>';
+      activeClasses.forEach(item => {
+        const option = document.createElement('option');
+        option.value = item.class_id;
+        option.textContent = item.class_name;
+        select.appendChild(option);
+      });
+      if (selectedValue && !activeClasses.some(item => item.class_id === selectedValue)) {
+        const option = document.createElement('option');
+        option.value = selectedValue;
+        option.textContent = `${selectedValue} (kelas nonaktif)`;
+        select.appendChild(option);
+      }
+      select.value = selectedValue || '';
+      if (!activeClasses.length && !selectedValue) {
+        select.innerHTML = '<option value="">Belum ada kelas aktif. Buat kelas terlebih dahulu.</option>';
+      }
+    }
+
+    async function loadAdminStudents() {
       switchView('view-admin-students', 'Data Siswa');
-      const tbody=document.getElementById('tableStudents'); tbody.innerHTML='<tr><td colspan="5" class="py-4 text-center text-gray-400">Memuat data siswa...</td></tr>';
-      if(!serverMode){tbody.innerHTML='<tr><td colspan="5" class="py-4 text-center text-gray-400">Hubungkan aplikasi ke Google Apps Script untuk memuat data.</td></tr>';return;}
-      google.script.run.withSuccessHandler(list=>{
-        tbody.innerHTML=''; if(!list||!list.length){tbody.innerHTML='<tr><td colspan="5" class="py-4 text-center text-gray-400">Belum ada data siswa.</td></tr>';return;}
-        list.forEach(st=>{const tr=document.createElement('tr');tr.className='border-b border-gray-100';
-          [st.name,st.username,st.classId,st.status].forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v||'-';tr.appendChild(td);});
-          const td=document.createElement('td');td.className='py-3 whitespace-nowrap';const edit=document.createElement('button');edit.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1';edit.textContent='Edit';edit.onclick=()=>openStudentForm(st);
-          const del=document.createElement('button');del.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg';del.textContent='Hapus';del.onclick=()=>deleteStudent(st);td.append(edit,del);tr.appendChild(td);tbody.appendChild(tr);
+      const tbody = document.getElementById('tableStudents');
+      tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Memuat data siswa...</td></tr>';
+      try {
+        const result = await callStudentFunction({ action: 'list' });
+        const students = result.students || [];
+        tbody.innerHTML = '';
+        if (!students.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Belum ada data siswa.</td></tr>';
+          return;
+        }
+        students.forEach(st => {
+          const tr = document.createElement('tr');
+          tr.className = 'border-b border-gray-100';
+          [st.full_name, st.username, st.class_id, st.status === 'Active' ? 'Aktif' : 'Nonaktif'].forEach(value => {
+            const td = document.createElement('td');
+            td.className = 'py-3 pr-3';
+            td.textContent = value || '-';
+            tr.appendChild(td);
+          });
+          const td = document.createElement('td');
+          td.className = 'py-3 whitespace-nowrap';
+          const edit = document.createElement('button');
+          edit.className = 'bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1';
+          edit.textContent = 'Edit';
+          edit.onclick = () => openStudentForm(st);
+          const statusButton = document.createElement('button');
+          statusButton.className = st.status === 'Active' ? 'bg-red-50 text-red-600 px-3 py-1 rounded-lg' : 'bg-green-50 text-green-700 px-3 py-1 rounded-lg';
+          statusButton.textContent = st.status === 'Active' ? 'Nonaktifkan' : 'Aktifkan';
+          statusButton.onclick = () => changeStudentStatus(st, st.status === 'Active' ? 'Inactive' : 'Active');
+          td.append(edit, statusButton);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
         });
-      }).withFailureHandler(err=>showToast('Gagal memuat siswa: '+(err&&err.message?err.message:err),'error')).getAdminStudents(authToken);
+      } catch (err) {
+        console.error('Gagal memuat siswa:', err);
+        tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-red-500">${String(err.message || 'Gagal memuat data siswa.')}</td></tr>`;
+        showToast('Gagal memuat siswa: ' + (err.message || err), 'error');
+      }
     }
-    function openStudentForm(st) {
-      editingStudentId=st?st.id:null; document.getElementById('recordModalTitle').innerText=st?'Edit Data Siswa':'Tambah Siswa';
-      document.getElementById('studentRecordForm').classList.remove('hide');document.getElementById('classRecordForm').classList.add('hide');document.getElementById('questionRecordForm').classList.add('hide');
-      document.getElementById('stUsername').value=st?st.username||'':'';document.getElementById('stName').value=st?st.name||'':'';document.getElementById('stClass').value=st?st.classId||'':'';document.getElementById('stPassword').value='';document.getElementById('stPassword').required=!st;document.getElementById('stStatus').value=st?st.status||'Active':'Active';document.getElementById('btnSaveStudent').innerText=st?'Simpan Perubahan':'Simpan Siswa';document.getElementById('recordModal').classList.remove('hide');
+
+    async function openStudentForm(st) {
+      editingStudentId = st ? st.id : null;
+      document.getElementById('recordModalTitle').innerText = st ? 'Edit Data Siswa' : 'Tambah Siswa';
+      document.getElementById('studentRecordForm').classList.remove('hide');
+      document.getElementById('classRecordForm').classList.add('hide');
+      document.getElementById('questionRecordForm').classList.add('hide');
+      const username = document.getElementById('stUsername');
+      const name = document.getElementById('stName');
+      const password = document.getElementById('stPassword');
+      const status = document.getElementById('stStatus');
+      username.value = st ? st.username || '' : '';
+      name.value = st ? st.full_name || '' : '';
+      password.value = '';
+      password.required = !st;
+      status.value = st ? st.status || 'Active' : 'Active';
+      username.readOnly = !!st;
+      name.readOnly = !!st;
+      password.closest('label').classList.toggle('hide', !!st);
+      status.disabled = !st;
+      document.getElementById('btnSaveStudent').innerText = st ? 'Simpan Status' : 'Simpan Siswa';
+      document.getElementById('recordModal').classList.remove('hide');
+      try {
+        await loadStudentClassOptions(st ? st.class_id || '' : '');
+        document.getElementById('stClass').disabled = !!st;
+      } catch (err) {
+        showToast('Gagal memuat pilihan kelas: ' + (err.message || err), 'error');
+      }
     }
-    function saveStudent(e) {
-      e.preventDefault(); if(!serverMode)return showToast('Penyimpanan membutuhkan Google Apps Script.','error');
-      const data={username:document.getElementById('stUsername').value.trim(),name:document.getElementById('stName').value.trim(),classId:document.getElementById('stClass').value.trim(),password:document.getElementById('stPassword').value,status:document.getElementById('stStatus').value};
-      const btn=document.getElementById('btnSaveStudent');btn.disabled=true;btn.innerText='Menyimpan...';
-      const done=()=>{btn.disabled=false;btn.innerText=editingStudentId?'Simpan Perubahan':'Simpan Siswa';};
-      const runner=google.script.run.withSuccessHandler(res=>{done();showToast(res.message||'Data tersimpan.');closeRecordModal();loadAdminStudents();loadAdminDashboard();}).withFailureHandler(err=>{done();showToast('Gagal menyimpan siswa: '+(err&&err.message?err.message:err),'error');});
-      if(editingStudentId)runner.apiUpdateStudent(editingStudentId,data,authToken);else runner.apiAddStudent(data,authToken);
+
+    async function saveStudent(e) {
+      e.preventDefault();
+      const btn = document.getElementById('btnSaveStudent');
+      btn.disabled = true;
+      btn.innerText = 'Menyimpan...';
+      try {
+        if (editingStudentId) {
+          const result = await callStudentFunction({
+            action: 'set-status',
+            student_id: editingStudentId,
+            status: document.getElementById('stStatus').value
+          });
+          showToast(result.message || 'Status siswa berhasil diperbarui.');
+        } else {
+          const result = await callStudentFunction({
+            username: document.getElementById('stUsername').value.trim(),
+            full_name: document.getElementById('stName').value.trim(),
+            class_id: document.getElementById('stClass').value,
+            password: document.getElementById('stPassword').value
+          }, 'create-student');
+          showToast(result.message || 'Akun siswa berhasil dibuat.');
+        }
+        closeRecordModal();
+        await loadAdminStudents();
+        await loadAdminDashboard();
+      } catch (err) {
+        showToast('Gagal menyimpan siswa: ' + (err.message || err), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerText = editingStudentId ? 'Simpan Status' : 'Simpan Siswa';
+      }
     }
-    function deleteStudent(st) { showAppConfirm('Akun '+st.name+' akan dinonaktifkan. Riwayat ujian tetap disimpan. Lanjutkan?',()=>google.script.run.withSuccessHandler(r=>{showToast(r.message||'Akun dinonaktifkan.');loadAdminStudents();loadAdminDashboard();}).withFailureHandler(err=>showToast('Gagal menghapus siswa: '+(err&&err.message?err.message:err),'error')).apiDeleteStudent(st.id,authToken),'Nonaktifkan Akun','Ya, Nonaktifkan'); }
+
+    function changeStudentStatus(st, newStatus) {
+      const studentName = st.full_name || st.username || 'siswa';
+      const actionLabel = newStatus === 'Active' ? 'Aktifkan' : 'Nonaktifkan';
+      showAppConfirm(`Akun ${studentName} akan ${newStatus === 'Active' ? 'diaktifkan' : 'dinonaktifkan'}. Riwayat ujian tetap disimpan. Lanjutkan?`, async () => {
+        try {
+          const result = await callStudentFunction({ action: 'set-status', student_id: st.id, status: newStatus });
+          showToast(result.message || `Akun siswa berhasil ${newStatus === 'Active' ? 'diaktifkan' : 'dinonaktifkan'}.`);
+          await loadAdminStudents();
+          await loadAdminDashboard();
+        } catch (err) {
+          showToast('Gagal mengubah status siswa: ' + (err.message || err), 'error');
+        }
+      }, `${actionLabel} Akun`, `Ya, ${actionLabel}`);
+    }
+
+    function deleteStudent(st) {
+      changeStudentStatus(st, 'Inactive');
+    }
     function closeRecordModal(){document.getElementById('recordModal').classList.add('hide');['studentRecordForm','classRecordForm','questionRecordForm'].forEach(id=>document.getElementById(id).classList.add('hide'));editingStudentId=null;editingClassId=null;editingQuestionId=null;}
 
     let cachedAdminQuestions=[];
