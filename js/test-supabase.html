@@ -3,30 +3,38 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pengujian Koneksi Supabase</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Uji Server Supabase</title>
 </head>
 <body>
-
-    <h2>Pengujian Koneksi Supabase</h2>
-    <p id="status">Memeriksa koneksi...</p>
+    <h2>Pengujian Server Supabase</h2>
+    <p id="status">Menghubungkan ke server...</p>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="js/supabase.js"></script>
 
     <script>
-        const status = document.getElementById('status');
+        async function testConnection() {
+            const status = document.getElementById('status');
 
-        if (window.supabaseClient) {
-            status.textContent =
-                'Koneksi Supabase berhasil diinisialisasi!';
-            status.style.color = 'green';
-        } else {
-            status.textContent =
-                'Koneksi Supabase gagal. Periksa konfigurasi.';
-            status.style.color = 'red';
+            try {
+                const { data, error } =
+                    await window.supabaseClient.auth.getSession();
+
+                if (error) throw error;
+
+                status.textContent =
+                    'BERHASIL: Server Supabase dapat dihubungi.';
+                status.style.color = 'green';
+
+            } catch (error) {
+                status.textContent =
+                    'GAGAL: ' + error.message;
+                status.style.color = 'red';
+            }
         }
-    </script>
 
+        testConnection();
+    </script>
 </body>
 </html>
