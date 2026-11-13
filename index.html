@@ -10,19 +10,42 @@
     <h1>SISTEM UJIAN ONLINE SMA - V2</h1>
     <p>Halaman utama aplikasi ujian online.</p>
 
-    <p id="status">Memuat konfigurasi Supabase...</p>
+    <p id="status">Menghubungkan ke Supabase...</p>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="js/supabase.js"></script>
 
     <script>
-        if (window.supabaseClient) {
-            document.getElementById('status').textContent =
-                'Konfigurasi Supabase berhasil dimuat.';
-        } else {
-            document.getElementById('status').textContent =
-                'Koneksi Supabase gagal dimuat.';
+        async function periksaSupabase() {
+            const status = document.getElementById('status');
+
+            try {
+                const response = await fetch(
+                    SUPABASE_URL + '/auth/v1/health',
+                    {
+                        method: 'GET',
+                        headers: {
+                            'apikey': SUPABASE_PUBLISHABLE_KEY
+                        }
+                    }
+                );
+
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
+
+                status.textContent =
+                    'BERHASIL: Server Supabase terhubung!';
+                status.style.color = 'green';
+
+            } catch (error) {
+                status.textContent =
+                    'GAGAL: ' + error.message;
+                status.style.color = 'red';
+            }
         }
+
+        periksaSupabase();
     </script>
 </body>
 </html>
