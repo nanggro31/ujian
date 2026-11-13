@@ -821,9 +821,18 @@ body::after{
         <div class="md:col-span-2 flex justify-end gap-3"><button type="button" onclick="closeRecordModal()" class="px-5 py-3 bg-gray-100 rounded-xl">Batal</button><button id="btnSaveStudent" class="px-5 py-3 bg-primary text-white rounded-xl font-semibold">Simpan Siswa</button></div>
       </form>
       <form id="classRecordForm" class="hide grid grid-cols-1 md:grid-cols-2 gap-4" onsubmit="saveClass(event)">
-        <label class="text-sm">Nama Kelas<input id="clName" required class="border p-3 rounded-xl w-full mt-1" placeholder="Contoh: X IPA 1"></label>
-        <label class="text-sm">Tingkat<input id="clLevel" class="border p-3 rounded-xl w-full mt-1" placeholder="Contoh: X / XI / XII"></label>
-        <label class="text-sm">Status<select id="clStatus" class="border p-3 rounded-xl w-full mt-1"><option value="Active">Aktif</option><option value="Inactive">Nonaktif</option></select></label>
+        <label class="text-sm">Jenjang
+          <select id="clSchoolLevel" required onchange="updateClassGradeOptions()" class="border p-3 rounded-xl w-full mt-1">
+            <option value="SMP">SMP</option><option value="SMA">SMA</option>
+          </select>
+        </label>
+        <label class="text-sm">Tingkat
+          <select id="clLevel" required class="border p-3 rounded-xl w-full mt-1"></select>
+        </label>
+        <label class="text-sm md:col-span-2">Rombongan Belajar
+          <select id="clSection" required class="border p-3 rounded-xl w-full mt-1"></select>
+          <span class="text-xs text-gray-500">Contoh nama kelas yang dibuat: VII-A, VII-B, VIII-A, X-A.</span>
+        </label>
         <div class="md:col-span-2 flex justify-end gap-3"><button type="button" onclick="closeRecordModal()" class="px-5 py-3 bg-gray-100 rounded-xl">Batal</button><button id="btnSaveClass" class="px-5 py-3 bg-primary text-white rounded-xl font-semibold">Simpan Kelas</button></div>
       </form>
       <form id="questionRecordForm" class="hide grid grid-cols-1 md:grid-cols-2 gap-4" onsubmit="saveQuestion(event)">
@@ -1589,56 +1598,176 @@ function tampilkanFooterHakcipta(tampilkan) {
     footer.style.display = tampilkan ? 'block' : 'none';
 }
 
-    function loadAdminClasses(){
-      switchView('view-admin-classes','Manajemen Kelas');
-      const body=document.getElementById('tableClasses');
-      body.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Memuat kelas...</td></tr>';
-      google.script.run.withSuccessHandler(rows=>{
-        // Normalisasi ulang di sisi tampilan untuk mencegah kelas ganda akibat data lama.
-        const unique=new Map();
-        (rows||[]).forEach(c=>{
-          const key=String(c.name||'').trim().toLocaleLowerCase('id').replace(/\s+/g,' ');
-          if(!key)return;
-          const old=unique.get(key);
-          if(!old || (String(c.status).toLowerCase()==='active' && String(old.status).toLowerCase()!=='active'))unique.set(key,c);
-        });
-        const list=Array.from(unique.values()).sort((a,b)=>String(a.name).localeCompare(String(b.name),'id'));
-        body.innerHTML='';
-        list.forEach(c=>{
-          const tr=document.createElement('tr');tr.className='border-b border-gray-100';
-          [c.name,c.level||'-',String(c.status).toLowerCase()==='inactive'?'Nonaktif':'Aktif'].forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v;tr.appendChild(td);});
-          const td=document.createElement('td');td.className='py-3 whitespace-nowrap';
-          const edit=document.createElement('button');edit.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-2';edit.textContent='Edit';edit.onclick=()=>openClassForm(c);
-          const del=document.createElement('button');del.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg';del.textContent='Hapus';
-          del.onclick=()=>showAppConfirm('Kelas '+c.name+' akan dihapus dari daftar kelas. Penghapusan hanya dapat dilakukan jika kelas tidak lagi digunakan oleh data siswa atau jadwal ujian.',()=>{
-            google.script.run.withSuccessHandler(r=>{showToast(r.message||'Kelas berhasil dihapus.');loadAdminClasses();})
-              .withFailureHandler(e=>showToast(e&&e.message?e.message:'Gagal menghapus kelas.','error')).apiDeleteClass(c.id,authToken);
-          },'Hapus Kelas','Ya, Hapus');
-          td.append(edit,del);tr.appendChild(td);body.appendChild(tr);
-        });
-        if(!list.length)body.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada kelas.</td></tr>';
-      }).withFailureHandler(e=>showToast(e&&e.message?e.message:'Gagal memuat kelas.','error')).getAdminClasses(authToken);
+    async function callClassFunction(payload) {
+      if (!window.supabaseClient || typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_PUBLISHABLE_KEY === 'undefined') {
+        throw new Error('Konfigurasi Supabase belum tersedia. Periksa js/supabase.js.');
+      }
+
+      const { data: sessionData, error: sessionError } = await window.supabaseClient.auth.getSession();
+      if (sessionError) throw sessionError;
+
+      const accessToken = sessionData && sessionData.session
+        ? sessionData.session.access_token
+        : authToken;
+
+      if (!accessToken) {
+        throw new Error('Sesi login tidak ditemukan. Silakan login kembali.');
+      }
+
+      authToken = accessToken;
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/manage-classes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_PUBLISHABLE_KEY,
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || `Permintaan kelas gagal. Kode server: ${response.status}`);
+      }
+      return result;
     }
-    function openClassForm(c) {
-      editingClassId=c?c.id:null;
-      document.getElementById('recordModalTitle').innerText=c?'Edit Data Kelas':'Tambah Kelas';
+
+    async function loadAdminClasses() {
+      switchView('view-admin-classes', 'Manajemen Kelas');
+      const body = document.getElementById('tableClasses');
+      body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Memuat kelas...</td></tr>';
+
+      try {
+        const result = await callClassFunction({ action: 'list' });
+        const classes = (result.classes || []).slice().sort((a, b) =>
+          String(a.class_name || '').localeCompare(String(b.class_name || ''), 'id')
+        );
+
+        body.innerHTML = '';
+        classes.forEach(c => {
+          const tr = document.createElement('tr');
+          tr.className = 'border-b border-gray-100';
+
+          const name = document.createElement('td');
+          name.className = 'py-3 pr-3 font-medium';
+          name.textContent = c.class_name || c.class_id || '-';
+
+          const level = document.createElement('td');
+          level.className = 'py-3 pr-3';
+          const grade = String(c.level || '');
+          level.textContent = ['VII', 'VIII', 'IX'].includes(grade) ? `SMP · ${grade}` :
+            (['X', 'XI', 'XII'].includes(grade) ? `SMA · ${grade}` : (grade || '-'));
+
+          const status = document.createElement('td');
+          status.className = 'py-3 pr-3';
+          const active = String(c.status || '').toLowerCase() === 'active';
+          status.textContent = active ? 'Aktif' : 'Nonaktif';
+
+          const action = document.createElement('td');
+          action.className = 'py-3 whitespace-nowrap';
+          const toggle = document.createElement('button');
+          toggle.className = active
+            ? 'bg-red-50 text-red-600 px-3 py-1 rounded-lg'
+            : 'bg-green-50 text-green-700 px-3 py-1 rounded-lg';
+          toggle.textContent = active ? 'Nonaktifkan' : 'Aktifkan';
+          toggle.onclick = () => setClassStatus(c.class_id, active ? 'Inactive' : 'Active', c.class_name || c.class_id);
+          action.appendChild(toggle);
+
+          tr.append(name, level, status, action);
+          body.appendChild(tr);
+        });
+
+        if (!classes.length) {
+          body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada kelas. Klik Tambah Kelas untuk membuat kelas pertama.</td></tr>';
+        }
+      } catch (err) {
+        console.error('Gagal memuat kelas:', err);
+        body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-red-500">Gagal memuat data kelas.</td></tr>';
+        showToast('Gagal memuat kelas: ' + (err && err.message ? err.message : err), 'error');
+      }
+    }
+
+    async function setClassStatus(classId, nextStatus, className) {
+      const actionLabel = nextStatus === 'Active' ? 'mengaktifkan' : 'menonaktifkan';
+      showAppConfirm(`Apakah Anda yakin ingin ${actionLabel} kelas ${className}?`, async () => {
+        try {
+          const result = await callClassFunction({
+            action: 'set-status',
+            class_id: classId,
+            status: nextStatus
+          });
+          showToast(result.message || 'Status kelas berhasil diperbarui.');
+          await loadAdminClasses();
+        } catch (err) {
+          showToast('Gagal memperbarui status kelas: ' + (err && err.message ? err.message : err), 'error');
+        }
+      }, 'Ubah Status Kelas', 'Ya, Lanjutkan');
+    }
+
+    function updateClassGradeOptions() {
+      const school = document.getElementById('clSchoolLevel').value;
+      const gradeSelect = document.getElementById('clLevel');
+      const grades = school === 'SMP' ? ['VII', 'VIII', 'IX'] : ['X', 'XI', 'XII'];
+      gradeSelect.innerHTML = '';
+      grades.forEach(grade => {
+        const option = document.createElement('option');
+        option.value = grade;
+        option.textContent = grade;
+        gradeSelect.appendChild(option);
+      });
+    }
+
+    function populateClassSections() {
+      const sectionSelect = document.getElementById('clSection');
+      sectionSelect.innerHTML = '';
+      const sections = [];
+      for (let i = 0; i < 26; i++) sections.push(String.fromCharCode(65 + i));
+      for (let i = 0; i < 26; i++) sections.push('A' + String.fromCharCode(65 + i));
+      sections.forEach(section => {
+        const option = document.createElement('option');
+        option.value = section;
+        option.textContent = `Rombel ${section}`;
+        sectionSelect.appendChild(option);
+      });
+    }
+
+    function openClassForm() {
+      document.getElementById('recordModalTitle').innerText = 'Tambah Kelas';
       document.getElementById('studentRecordForm').classList.add('hide');
       document.getElementById('questionRecordForm').classList.add('hide');
       document.getElementById('classRecordForm').classList.remove('hide');
-      document.getElementById('clName').value=c?c.name||'':'';
-      document.getElementById('clLevel').value=c?c.level||'':'';
-      document.getElementById('clStatus').value=c?(String(c.status).toLowerCase()==='inactive'?'Inactive':'Active'):'Active';
-      document.getElementById('btnSaveClass').innerText=c?'Simpan Perubahan':'Simpan Kelas';
+      document.getElementById('clSchoolLevel').value = 'SMP';
+      updateClassGradeOptions();
+      populateClassSections();
+      document.getElementById('clLevel').value = 'VII';
+      document.getElementById('clSection').value = 'A';
+      document.getElementById('btnSaveClass').innerText = 'Simpan Kelas';
       document.getElementById('recordModal').classList.remove('hide');
     }
-    function saveClass(e) {
+
+    async function saveClass(e) {
       e.preventDefault();
-      if(!serverMode)return showToast('Penyimpanan membutuhkan Google Apps Script.','error');
-      const data={id:editingClassId||'',name:document.getElementById('clName').value.trim(),level:document.getElementById('clLevel').value.trim(),status:document.getElementById('clStatus').value};
-      const btn=document.getElementById('btnSaveClass');btn.disabled=true;btn.innerText='Menyimpan...';
-      google.script.run.withSuccessHandler(r=>{btn.disabled=false;showToast(r.message||'Data kelas tersimpan.');closeRecordModal();loadAdminClasses();})
-        .withFailureHandler(err=>{btn.disabled=false;btn.innerText=editingClassId?'Simpan Perubahan':'Simpan Kelas';showToast('Gagal menyimpan kelas: '+(err&&err.message?err.message:err),'error');})
-        .apiSaveClass(data,authToken);
+      const level = document.getElementById('clLevel').value;
+      const section = document.getElementById('clSection').value;
+      const btn = document.getElementById('btnSaveClass');
+      btn.disabled = true;
+      btn.innerText = 'Menyimpan...';
+
+      try {
+        const result = await callClassFunction({
+          action: 'create',
+          level,
+          section
+        });
+        showToast(result.message || 'Kelas berhasil dibuat.');
+        closeRecordModal();
+        await loadAdminClasses();
+      } catch (err) {
+        showToast('Gagal menyimpan kelas: ' + (err && err.message ? err.message : err), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Simpan Kelas';
+      }
     }
 
     function loadAdminStudents() {
@@ -1830,23 +1959,55 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
     function deleteQuestion(q){showAppConfirm('Soal ini akan dinonaktifkan dan tidak digunakan pada ujian baru. Riwayat ujian sebelumnya tetap dipertahankan. Lanjutkan?',()=>google.script.run.withSuccessHandler(r=>{showToast(r.message||'Soal dinonaktifkan.');loadAdminQuestions();loadAdminDashboard();}).withFailureHandler(err=>showToast('Gagal menghapus soal: '+(err&&err.message?err.message:err),'error')).apiDeleteQuestion(q.id,authToken),'Nonaktifkan Soal','Ya, Nonaktifkan');}
 
-    function loadClassOptions(selectId, selectedValue, includeAll=false) {
-      const sel=document.getElementById(selectId);if(!sel)return;
-      const previous=selectedValue!==undefined?String(selectedValue):String(sel.value||'');
-      sel.innerHTML='';
-      if(includeAll){const all=document.createElement('option');all.value='Semua';all.textContent='Semua Kelas';sel.appendChild(all);}
-      const loading=document.createElement('option');loading.value='';loading.textContent='Memuat kelas...';sel.appendChild(loading);
-      google.script.run.withSuccessHandler(rows=>{
-        sel.innerHTML='';
-        if(includeAll){const all=document.createElement('option');all.value='Semua';all.textContent='Semua Kelas';sel.appendChild(all);}
-        (rows||[]).filter(c=>String(c.status||'Active').toLowerCase()!=='inactive')
-          .forEach(c=>{const o=document.createElement('option');o.value=c.name;o.textContent=c.name;sel.appendChild(o);});
-        if(previous && !Array.from(sel.options).some(o=>o.value===previous)) {
-          const legacy=document.createElement('option');legacy.value=previous;legacy.textContent=previous+' (data lama)';sel.appendChild(legacy);
+    async function loadClassOptions(selectId, selectedValue, includeAll=false) {
+      const sel = document.getElementById(selectId);
+      if (!sel) return;
+      const previous = selectedValue !== undefined ? String(selectedValue) : String(sel.value || '');
+      sel.innerHTML = '';
+      if (includeAll) {
+        const all = document.createElement('option');
+        all.value = 'Semua';
+        all.textContent = 'Semua Kelas';
+        sel.appendChild(all);
+      }
+      const loading = document.createElement('option');
+      loading.value = '';
+      loading.textContent = 'Memuat kelas...';
+      sel.appendChild(loading);
+
+      try {
+        const result = await callClassFunction({ action: 'list' });
+        sel.innerHTML = '';
+        if (includeAll) {
+          const all = document.createElement('option');
+          all.value = 'Semua';
+          all.textContent = 'Semua Kelas';
+          sel.appendChild(all);
         }
-        if(previous && Array.from(sel.options).some(o=>o.value===previous))sel.value=previous;
-        else if(!includeAll && sel.options.length)sel.selectedIndex=0;
-      }).withFailureHandler(err=>{sel.innerHTML='<option value="">Gagal memuat kelas</option>';showToast('Gagal memuat daftar kelas: '+(err&&err.message?err.message:err),'error');}).getAdminClasses(authToken);
+        (result.classes || [])
+          .filter(c => String(c.status || 'Active').toLowerCase() !== 'inactive')
+          .forEach(c => {
+            const option = document.createElement('option');
+            option.value = c.class_id;
+            option.textContent = c.class_name || c.class_id;
+            sel.appendChild(option);
+          });
+
+        if (previous && !Array.from(sel.options).some(option => option.value === previous)) {
+          const legacy = document.createElement('option');
+          legacy.value = previous;
+          legacy.textContent = previous + ' (data lama)';
+          sel.appendChild(legacy);
+        }
+        if (previous && Array.from(sel.options).some(option => option.value === previous)) {
+          sel.value = previous;
+        } else if (!includeAll && sel.options.length) {
+          sel.selectedIndex = 0;
+        }
+      } catch (err) {
+        sel.innerHTML = '<option value="">Gagal memuat kelas</option>';
+        showToast('Gagal memuat daftar kelas: ' + (err && err.message ? err.message : err), 'error');
+      }
     }
 
     function loadAdminExams() {
