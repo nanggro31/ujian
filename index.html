@@ -2370,6 +2370,17 @@ function tampilkanFooterHakcipta(tampilkan) {
       return date.toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
     }
 
+    // datetime-local memakai waktu lokal perangkat. Konversikan ke ISO UTC
+    // sebelum dikirim ke Supabase agar WIB tidak dibaca sebagai UTC.
+    function toExamIsoDateTime(value) {
+      if (!value) return null;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        throw new Error('Format tanggal atau jam ujian tidak valid.');
+      }
+      return date.toISOString();
+    }
+
     function toExamDateTimeInput(value) {
       if (!value) return '';
       const date = new Date(value);
@@ -2465,8 +2476,8 @@ function tampilkanFooterHakcipta(tampilkan) {
         kkm: document.getElementById('exKKM').value,
         token: document.getElementById('exToken').value.trim(),
         randomize: document.getElementById('exRandom').checked,
-        startAt: document.getElementById('exStartAt').value,
-        endAt: document.getElementById('exEndAt').value,
+        startAt: toExamIsoDateTime(document.getElementById('exStartAt').value),
+        endAt: toExamIsoDateTime(document.getElementById('exEndAt').value),
         status: editingExamId ? editingExamStatus : 'Active'
       };
     }
@@ -2833,7 +2844,7 @@ function tampilkanFooterHakcipta(tampilkan) {
           p.textContent = 'Mapel: ' + (ex.subject || '-') + ' | Durasi: ' + ex.duration + ' Menit | KKM: ' + ex.kkm;
           const schedule = document.createElement('p');
           schedule.className = 'text-xs text-gray-500 mb-4';
-          schedule.textContent = 'Jadwal: ' + (ex.startAt ? ex.startAt.replace('T', ' ') : 'Segera') + ' – ' + (ex.endAt ? ex.endAt.replace('T', ' ') : 'Sesuai durasi');
+          schedule.textContent = 'Jadwal: ' + (ex.startAt ? formatExamDateTime(ex.startAt) : 'Segera') + ' – ' + (ex.endAt ? formatExamDateTime(ex.endAt) : 'Sesuai durasi');
           const avail = document.createElement('p');
           avail.className = 'text-sm mb-3 ' + (ex.availability === 'Dapat diikuti' ? 'text-green-600' : 'text-orange-600');
           avail.textContent = ex.availability;
