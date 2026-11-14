@@ -1472,14 +1472,25 @@ function downloadTemplate(jenjang) {
       }
     }
 
-    function logout(skipSessionConfirm=false) {
+    async function logout(skipSessionConfirm=false) {
       if(activeExam.id && !skipSessionConfirm) {
         showAppConfirm('Anda masih berada dalam sesi ujian. Jika memilih keluar, sesi akan ditandai untuk ditinjau oleh administrator. Apakah Anda yakin ingin keluar?',()=>logout(true),'Konfirmasi Keluar dari Ujian','Ya, Keluar');
         return;
       }
+      // Pastikan tindakan Keluar ketika ujian masih berlangsung tersimpan di Supabase
+      // sebelum token login dan ID sesi dihapus dari browser.
+      if(!serverMode && activeExam.id && activeSessionId && authToken && currentUser && currentUser.role==='student'){
+        try {
+          await callStudentFunction({action:'student-exit',sessionId:activeSessionId},'student-exam');
+        } catch(err) {
+          console.error('Gagal mencatat siswa keluar dari ujian:',err);
+          showToast('Catatan Keluar gagal disimpan: '+(err&&err.message?err.message:err),'error');
+          return;
+        }
+      }
       clearInterval(monitorPollInt); monitorPollInt=null; previousMonitorStatuses={};
       if (serverMode && authToken) google.script.run.withFailureHandler(()=>{}).apiLogout(authToken, activeExam.id ? activeSessionId : '');
-      if (!serverMode && window.supabaseClient) window.supabaseClient.auth.signOut().catch(err => console.warn('Supabase signOut:', err));
+      if (!serverMode && window.supabaseClient) await window.supabaseClient.auth.signOut().catch(err => console.warn('Supabase signOut:', err));
       sessionStorage.removeItem('cbt_user_profile');
       sessionStorage.removeItem('cbt_auth_token');
       sessionStorage.removeItem('cbt_active_view');
@@ -3273,6 +3284,13 @@ function tampilkanFooterHakcipta(tampilkan) {
         google.script.run.withFailureHandler(err=>{
           console.warn('Pencatatan anti-cheat gagal:',err);
         }).apiLogAntiCheatViolation({sessionId:activeSessionId,examId:activeExam.id,type,details:details||''},authToken);
+      } else if(!serverMode && authToken && currentUser && activeSessionId){
+        callStudentFunction({
+          action:'log-anti-cheat',
+          sessionId:activeSessionId,
+          type,
+          details:details||''
+        },'student-exam').catch(err=>console.warn('Pencatatan anti-cheat Supabase gagal:',err));
       }
       if(warning && !document.hidden)showToast(warning,'error');
     }
