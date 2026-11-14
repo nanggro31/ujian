@@ -1715,7 +1715,8 @@ function tampilkanFooterHakcipta(tampilkan) {
 
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) {
-        throw new Error(result.message || `Permintaan kelas gagal. Kode server: ${response.status}`);
+        const detail = Array.isArray(result.failed) ? result.failed.map(x => `${x.class_id || x.student_id || 'Data'}: ${x.message}`).join(' | ') : '';
+        throw new Error([result.message, detail].filter(Boolean).join(' — ') || `Permintaan kelas gagal. Kode server: ${response.status}`);
       }
       return result;
     }
@@ -1890,7 +1891,8 @@ function tampilkanFooterHakcipta(tampilkan) {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) {
-        throw new Error(result.message || `Permintaan siswa gagal. Kode server: ${response.status}`);
+        const detail = Array.isArray(result.failed) ? result.failed.map(x => `${x.student_name || x.student_id || 'Siswa'}: ${x.message}`).join(' | ') : '';
+        throw new Error([result.message, detail].filter(Boolean).join(' — ') || `Permintaan siswa gagal. Kode server: ${response.status}`);
       }
       return result;
     }
