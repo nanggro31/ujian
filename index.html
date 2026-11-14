@@ -2885,14 +2885,19 @@ function tampilkanFooterHakcipta(tampilkan) {
 
 
     async function loadStudentDashboard() {
-      // Sembunyikan footer saat dashboard siswa dibuka
       tampilkanFooterHakcipta(false);
-
       switchView('view-student-dashboard', 'Ujian Saya');
+
       const container = document.getElementById('studentExamList');
       container.innerHTML = '<div class="bg-white p-6 rounded-2xl shadow-soft text-gray-500">Memuat ujian...</div>';
+      ['studentStatAvailable','studentStatActive','studentStatCompleted','studentStatAverage'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '...';
+      });
+      document.getElementById('studentResultsTable').innerHTML =
+        '<tr><td colspan="7" class="py-4 text-gray-400">Memuat riwayat ujian...</td></tr>';
 
-      // Pertahankan jalur Google Apps Script untuk aplikasi versi lama.
+      // Mode Google Apps Script lama tetap dipertahankan.
       if (serverMode) {
         loadStudentSummary();
         google.script.run
@@ -2902,25 +2907,140 @@ function tampilkanFooterHakcipta(tampilkan) {
         return;
       }
 
-      // GitHub Pages: ambil daftar ujian dari Supabase Edge Function.
+      // GitHub Pages: ambil daftar ujian dan ringkasan nilai dari Supabase.
       try {
-        const result = await callStudentFunction(
-          { action: 'student-list' },
-          'manage-exams'
-        );
-        renderStudentExamCards(result.exams || []);
+        const [examResult, summary] = await Promise.all([
+          callStudentFunction({ action: 'student-list' }, 'manage-exams'),
+          callStudentFunction({ action: 'dashboard-summary' }, 'student-exam')
+        ]);
+        const exams = examResult.exams || [];
+        renderStudentSummary(summary, exams);
+        renderStudentExamCards(exams, summary);
       } catch (err) {
+        console.error('Gagal memuat dashboard siswa:', err);
         showStudentExamError(err);
+        document.getElementById('studentResultsTable').innerHTML =
+          '<tr><td colspan="7" class="py-4 text-red-500">Gagal memuat riwayat hasil ujian.</td></tr>';
       }
 
-      function renderStudentExamCards(exams) {
+      function renderStudentSummary(data, exams) {
+        data = data || {};
+        const results = Array.isArray(data.results) ? data.results : [];
+        const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+        const latestByExam = new Map();
+        sessions.forEach(session => {
+          const key = String(session.examId || '');
+          if (key && !latestByExam.has(key)) latestByExam.set(key, session);
+        });
+
+        const availableCount = (exams || []).filter(ex => {
+          const latest = latestByExam.get(String(ex.id || ''));
+          if (latest) {
+            const status = String(latest.status || '').toLowerCase();
+            if (status === 'active') return false;
+            if (status === 'blocked' || status === 'disconnected') return false;
+            if (status === 'submitted' || status === 'completed') {
+              return latest.adminReason === 'ADMIN_REENTRY_APPROVED_ONCE';
+            }
+          }
+          return ex.availability === 'Dapat diikuti';
+        }).length;
+
+        const average = results.length
+          ? Math.round(results.reduce((sum, row) => sum + Number(row.score || 0), 0) / results.length * 100) / 100
+          : null;
+
+        document.getElementById('studentStatAvailable').textContent = availableCount;
+        document.getElementById('studentStatActive').textContent = Number(data.active || 0);
+        document.getElementById('studentStatCompleted').textContent = Number(data.completed ?? results.length);
+        document.getElementById('studentStatAverage').textContent = average === null ? '-' : average;
+
+        const tbody = document.getElementById('studentResultsTable');
+        tbody.innerHTML = '';
+        if (!results.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="py-4 text-gray-400">Belum ada hasil ujian.</td></tr>';
+        } else {
+          results.slice().reverse().forEach(r => {
+            const tr = document.createElement('tr');
+            tr.className = 'border-b border-gray-100';
+            const date = r.submittedAt ? new Date(r.submittedAt).toLocaleDateString('id-ID') : '-';
+            [r.examName || '-', r.subject || '-', date, r.correctCount ?? 0, r.wrongCount ?? 0, r.score ?? 0, r.isPassed || '-'].forEach(value => {
+              const td = document.createElement('td');
+              td.className = 'py-3 pr-3';
+              td.textContent = value == null ? '-' : String(value);
+              tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+          });
+        }
+
+        const canvas = document.getElementById('studentScoreChart');
+        if (studentScoreChart) {
+          studentScoreChart.destroy();
+          studentScoreChart = null;
+        }
+        if (canvas && typeof Chart !== 'undefined') {
+          studentScoreChart = new Chart(canvas, {
+            type: 'line',
+            data: {
+              labels: results.map(r => r.examName || 'Ujian'),
+              datasets: [{
+                label: 'Nilai',
+                data: results.map(r => Number(r.score || 0)),
+                tension: 0.25,
+                fill: false
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: { y: { beginAtZero: true, max: 100 } }
+            }
+          });
+        }
+      }
+
+      function renderStudentExamCards(exams, summary) {
         container.innerHTML = '';
         if (!exams || !exams.length) {
           container.innerHTML = '<div class="bg-white p-6 rounded-2xl shadow-soft text-gray-500">Belum ada ujian yang dijadwalkan untuk kelas Anda.</div>';
           return;
         }
 
+        const sessions = Array.isArray(summary && summary.sessions) ? summary.sessions : [];
+        const latestByExam = new Map();
+        sessions.forEach(session => {
+          const key = String(session.examId || '');
+          if (key && !latestByExam.has(key)) latestByExam.set(key, session);
+        });
+
         exams.forEach(ex => {
+          const latest = latestByExam.get(String(ex.id || ''));
+          const status = String(latest && latest.status || '').toLowerCase();
+          let availability = ex.availability || 'Belum tersedia';
+          let buttonText = 'Buka Ujian';
+          let canOpen = availability === 'Dapat diikuti';
+
+          if (status === 'active') {
+            availability = 'Sesi ujian aktif. Anda dapat melanjutkan ujian.';
+            buttonText = 'Lanjutkan Ujian';
+            canOpen = true;
+          } else if (status === 'blocked' || status === 'disconnected') {
+            availability = 'Sesi dihentikan/terputus. Menunggu persetujuan Admin.';
+            buttonText = 'Menunggu Admin';
+            canOpen = false;
+          } else if (status === 'submitted' || status === 'completed') {
+            if (latest.adminReason === 'ADMIN_REENTRY_APPROVED_ONCE') {
+              availability = 'Izin Buka Ulang diberikan Admin. Anda dapat memulai percobaan baru.';
+              buttonText = 'Mulai Ulang';
+              canOpen = true;
+            } else {
+              availability = 'Ujian sudah dikerjakan. Untuk masuk kembali, mintalah izin kepada Admin.';
+              buttonText = 'Sudah Dikerjakan';
+              canOpen = false;
+            }
+          }
+
           const card = document.createElement('div');
           card.className = 'bg-white p-6 rounded-2xl shadow-soft border-l-4 border-primary';
           const h = document.createElement('h5');
@@ -2933,12 +3053,12 @@ function tampilkanFooterHakcipta(tampilkan) {
           schedule.className = 'text-xs text-gray-500 mb-4';
           schedule.textContent = 'Jadwal: ' + (ex.startAt ? formatExamDateTime(ex.startAt) : 'Segera') + ' – ' + (ex.endAt ? formatExamDateTime(ex.endAt) : 'Sesuai durasi');
           const avail = document.createElement('p');
-          avail.className = 'text-sm mb-3 ' + (ex.availability === 'Dapat diikuti' ? 'text-green-600' : 'text-orange-600');
-          avail.textContent = ex.availability;
+          avail.className = 'text-sm mb-3 ' + (canOpen ? 'text-green-600' : 'text-orange-600');
+          avail.textContent = availability;
           const btn = document.createElement('button');
           btn.className = 'w-full py-2 bg-primary text-white rounded-xl font-medium disabled:opacity-40';
-          btn.textContent = 'Buka Ujian';
-          btn.disabled = ex.availability !== 'Dapat diikuti';
+          btn.textContent = buttonText;
+          btn.disabled = !canOpen;
           btn.onclick = () => openPreExam(ex.id, ex.name, ex.duration, ex.kkm);
           card.append(h, p, schedule, avail, btn);
           container.appendChild(card);
@@ -2948,17 +3068,8 @@ function tampilkanFooterHakcipta(tampilkan) {
       function showStudentExamError(err) {
         const message = err && err.message ? err.message : String(err);
         container.innerHTML = '<div class="bg-white p-6 rounded-2xl shadow-soft text-red-600">Gagal memuat ujian: ' + message + '</div>';
-        showToast('Gagal memuat daftar ujian: ' + message, 'error');
+        showToast('Gagal memuat dashboard siswa: ' + message, 'error');
       }
-    }
-    function loadStudentSummary(){
-      google.script.run.withSuccessHandler(data=>{
-        document.getElementById('studentStatAvailable').innerText=data.examsAvailable||0;document.getElementById('studentStatActive').innerText=data.active||0;document.getElementById('studentStatCompleted').innerText=data.completed||0;
-        const res=data.results||[],avg=res.length?Math.round(res.reduce((n,r)=>n+Number(r.score||0),0)/res.length*100)/100:null;document.getElementById('studentStatAverage').innerText=avg===null?'-':avg;
-        const tbody=document.getElementById('studentResultsTable');tbody.innerHTML='';if(!res.length)tbody.innerHTML='<tr><td colspan="7" class="py-4 text-gray-400">Belum ada hasil ujian.</td></tr>';
-        res.slice().reverse().forEach(r=>{const tr=document.createElement('tr');tr.className='border-b border-gray-100';[r.examName,r.subject,r.date||'-',r.correctCount,r.wrongCount,r.score,r.isPassed].forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v==null?'-':v;tr.appendChild(td);});tbody.appendChild(tr);});
-        const canvas=document.getElementById('studentScoreChart');if(studentScoreChart)studentScoreChart.destroy();if(typeof Chart!=='undefined'){studentScoreChart=new Chart(canvas,{type:'line',data:{labels:res.map(r=>r.examName),datasets:[{label:'Nilai',data:res.map(r=>Number(r.score||0)),tension:.25,fill:false}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,max:100}}}});}
-      }).withFailureHandler(err=>showToast('Gagal memuat ringkasan nilai: '+(err&&err.message?err.message:err),'error')).getStudentDashboard(authToken);
     }
 
     function openPreExam(id, name, duration, kkm) {
