@@ -2753,73 +2753,62 @@ function tampilkanFooterHakcipta(tampilkan) {
       rows.forEach(r=>{const tr=document.createElement('tr');tr.className='border-b border-gray-100';
         [r.student,r.userId,r.classId,r.examName,r.subject,r.dateTime,r.score,r.isPassed,r.correctCount,r.questionCount].forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v==null?'-':v;tr.appendChild(td);});tbody.appendChild(tr);});
     }
-    function loadAdminResults() {
+    async function loadAdminResults() {
       switchView('view-admin-results','Laporan Nilai');
       const tbody=document.getElementById('tableResults');tbody.innerHTML='<tr><td colspan="10" class="py-4 text-center text-gray-400">Memuat laporan...</td></tr>';
       const previous=reportFilters();
-      google.script.run.withSuccessHandler(list=>{
+      try {
+        let list=[];
+        if (serverMode) {
+          list=await new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getAdminResults({},authToken));
+        } else {
+          const response=await callAdminSupabaseFunction('admin-results',{action:'list'},'Laporan nilai');
+          list=response.results||[];
+        }
         cachedAdminResults=Array.isArray(list)?list:[];
         fillReportSelect('reportClass',cachedAdminResults.map(r=>r.classId),'Semua Kelas',previous.classId);
         fillReportSelect('reportSubject',cachedAdminResults.map(r=>r.subject),'Semua Mata Pelajaran',previous.subject);
         fillReportSelect('reportStudent',cachedAdminResults.map(r=>r.student),'Semua Siswa',previous.student);
         applyCachedReportFilters();
-      }).withFailureHandler(err=>showToast('Gagal memuat laporan: '+(err&&err.message?err.message:err),'error')).getAdminResults({},authToken);
+      } catch(err) {
+        tbody.innerHTML='<tr><td colspan="10" class="py-4 text-center text-red-500">Gagal memuat laporan nilai.</td></tr>';
+        showToast('Gagal memuat laporan: '+(err&&err.message?err.message:err),'error');
+      }
     }
     function resetReportFilters() {
       ['reportDateFrom','reportDateTo','reportClass','reportSubject','reportStudent'].forEach(id=>document.getElementById(id).value='');
       applyCachedReportFilters();
     }
     function exportAdminResults(format='csv') {
-      // Excel mengambil data laporan langsung dari getAdminResults agar tidak bergantung
-      // pada bentuk respons apiExportResults versi backend yang mungkin masih lama.
-      if (format === 'xlsx') {
-        if (typeof XLSX === 'undefined') {
-          showToast('Pustaka Excel belum dimuat. Periksa koneksi internet lalu muat ulang halaman.', 'error');
-          return;
-        }
-        google.script.run.withSuccessHandler(list => {
-          try {
-            if (!Array.isArray(list)) throw new Error('Data laporan tidak berbentuk daftar. Simpan/deploy ulang Code.gs versi terbaru, lalu coba lagi.');
-            const headers = ['Nama Siswa','ID Siswa','Kelas','Ujian','Mata Pelajaran','Tanggal Ujian','Nilai','Status KKTP','Jawaban Benar','Jumlah Soal'];
-            const dataRows = list.map(r => [
-              r.student ?? '', r.userId ?? '', r.classId ?? '', r.examName ?? '', r.subject ?? '',
-              r.dateTime ?? r.date ?? '', r.score ?? '',
-              (r.isPassed === true || String(r.isPassed).toLowerCase() === 'true' || String(r.isPassed).toLowerCase() === 'lulus') ? 'Lulus' :
-              (r.isPassed === false || String(r.isPassed).toLowerCase() === 'false' || String(r.isPassed).toLowerCase() === 'tidak lulus') ? 'Tidak Lulus' : (r.isPassed ?? ''),
-              r.correctCount ?? '', r.questionCount ?? ''
-            ]);
-            const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
-            ws['!cols'] = [{wch:24},{wch:18},{wch:14},{wch:26},{wch:22},{wch:22},{wch:12},{wch:16},{wch:16},{wch:14}];
-            ws['!autofilter'] = { ref: XLSX.utils.encode_range({s:{r:0,c:0},e:{r:dataRows.length,c:headers.length-1}}) };
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'Laporan Nilai');
-            const stamp = new Date().toISOString().slice(0,16).replace(/[-:T]/g,'');
-            XLSX.writeFile(wb, 'Laporan_Hasil_Ujian_' + stamp + '.xlsx');
-            showToast('Laporan Excel berhasil diunduh (' + dataRows.length + ' data).');
-          } catch (e) {
-            showToast('Gagal menyiapkan file laporan: ' + (e && e.message ? e.message : e), 'error');
-          }
-        }).withFailureHandler(err => showToast('Gagal mengambil data laporan: ' + (err && err.message ? err.message : err), 'error'))
-          .getAdminResults(reportFilters(), authToken);
+      const f=reportFilters();
+      const rows=cachedAdminResults.filter(r=>(!f.dateFrom||r.date>=f.dateFrom)&&(!f.dateTo||r.date<=f.dateTo)&&
+        (!f.classId||r.classId===f.classId)&&(!f.subject||r.subject===f.subject)&&(!f.student||r.student===f.student));
+      const headers=['Nama Siswa','ID Siswa','Kelas','Ujian','Mata Pelajaran','Tanggal Ujian','Nilai','Status KKTP','Jawaban Benar','Jumlah Soal'];
+      const dataRows=rows.map(r=>[
+        r.student??'',r.userId??'',r.classId??'',r.examName??'',r.subject??'',r.dateTime??r.date??'',r.score??'',
+        (r.isPassed===true||String(r.isPassed).toLowerCase()==='true'||String(r.isPassed).toLowerCase()==='lulus')?'Lulus':
+        (r.isPassed===false||String(r.isPassed).toLowerCase()==='false'||String(r.isPassed).toLowerCase()==='tidak lulus')?'Tidak Lulus':(r.isPassed??''),
+        r.correctCount??'',r.questionCount??''
+      ]);
+      if(format==='xlsx'){
+        if(typeof XLSX==='undefined')return showToast('Pustaka Excel belum dimuat. Periksa koneksi internet lalu muat ulang halaman.','error');
+        const ws=XLSX.utils.aoa_to_sheet([headers,...dataRows]);
+        ws['!cols']=[{wch:24},{wch:18},{wch:14},{wch:26},{wch:22},{wch:22},{wch:12},{wch:16},{wch:16},{wch:14}];
+        ws['!autofilter']={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:dataRows.length,c:headers.length-1}})};
+        const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Laporan Nilai');
+        const stamp=new Date().toISOString().slice(0,16).replace(/[-:T]/g,'');
+        XLSX.writeFile(wb,'Laporan_Hasil_Ujian_'+stamp+'.xlsx');
+        showToast('Laporan Excel berhasil diunduh ('+dataRows.length+' data).');
         return;
       }
-
-      // CSV dibuat di backend dengan UTF-8 BOM dan pemisah titik koma.
-      google.script.run.withSuccessHandler(res => {
-        try {
-          if (!res || !res.base64) throw new Error((res && res.message) || 'Respons CSV dari server tidak lengkap.');
-          const bytes = Uint8Array.from(atob(res.base64), c => c.charCodeAt(0));
-          const blob = new Blob([bytes], {type: res.mimeType || 'text/csv;charset=utf-8;'});
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a'); a.href = url; a.download = res.filename || 'Laporan_Hasil_Ujian.csv';
-          document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-          showToast('Laporan CSV berhasil diunduh (' + (res.count || 0) + ' data).');
-        } catch (e) {
-          showToast('Gagal menyiapkan file laporan: ' + (e && e.message ? e.message : e), 'error');
-        }
-      }).withFailureHandler(err => showToast('Gagal mengekspor laporan: ' + (err && err.message ? err.message : err), 'error'))
-        .apiExportResults(reportFilters(), 'csv', authToken);
+      const csv=[headers,...dataRows].map(row=>row.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(';')).join('\r\n');
+      const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'});
+      const url=URL.createObjectURL(blob);const a=document.createElement('a');
+      a.href=url;a.download='Laporan_Hasil_Ujian_'+new Date().toISOString().slice(0,10)+'.csv';
+      document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      showToast('Laporan CSV berhasil diunduh ('+dataRows.length+' data).');
     }
+
 
 
     // --- Student Functions ---
@@ -3612,13 +3601,47 @@ function tampilkanFooterHakcipta(tampilkan) {
       if(res&&res.score!==undefined){[['Jawaban benar',res.correctCount],['Jawaban salah',res.wrongCount],['Jumlah soal',res.questionCount],['Poin',String(res.earnedPoints??'-')+' / '+String(res.totalPoints??'-')]].forEach(pair=>{const d=document.createElement('div');d.className='bg-gray-50 rounded-xl p-3';const l=document.createElement('p');l.className='text-xs text-gray-500';l.textContent=pair[0];const v=document.createElement('p');v.className='text-lg font-bold';v.textContent=pair[1]??'-';d.append(l,v);box.appendChild(d);});}
       document.getElementById('studentResultModal').classList.remove('hide');
     }
-    function forceSubmit() {
-      if(submitPending)return;submitPending=true;clearInterval(timerInt);clearInterval(saveInt);clearTimeout(autoSaveTimer);clearInterval(sessionCheckInt);
-      const btn=document.getElementById('btnNextQuestion');btn.innerText='Mengirim jawaban...';btn.disabled=true;document.getElementById('examSubmitOverlay').classList.remove('hide');document.getElementById('autoSaveStatus').innerText='Mengirim seluruh jawaban ke server. Mohon jangan tutup halaman...';
+    async function forceSubmit() {
+      if(submitPending)return;
+      submitPending=true;clearInterval(timerInt);clearInterval(saveInt);clearTimeout(autoSaveTimer);clearInterval(sessionCheckInt);
+      const btn=document.getElementById('btnNextQuestion');
+      btn.innerText='Mengirim jawaban...';btn.disabled=true;
+      document.getElementById('examSubmitOverlay').classList.remove('hide');
+      document.getElementById('autoSaveStatus').innerText='Mengirim seluruh jawaban ke server. Mohon jangan tutup halaman...';
       const payload={userId:currentUser.id,examId:activeExam.id,sessionId:activeSessionId,answers:answers.map((a,i)=>({qId:questions[i].id,ans:Array.isArray(a)?JSON.stringify(a):a}))};
-      if(serverMode){google.script.run.withSuccessHandler(res=>{submitPending=false;autoSubmitOnTimeout=false;autoSubmitRetryCount=0;clearTimeout(autoSubmitRetryTimer);activeExam={};activeSessionId='';document.getElementById('syncStatus').innerText='🟢 Terhubung';document.getElementById('autoSaveStatus').innerText='Jawaban berhasil dikumpulkan';document.getElementById('examSubmitOverlay').classList.add('hide');sessionStorage.removeItem('cbt_pre_exam');sessionStorage.setItem('cbt_student_view','view-student-dashboard');showStudentResult(res);}).withFailureHandler(err=>{document.getElementById('examSubmitOverlay').classList.add('hide');submitPending=false;btn.disabled=false;btn.innerText=activeQ===questions.length-1?'Selesai & Kumpulkan':'Selanjutnya →';document.getElementById('autoSaveStatus').innerText='Pengumpulan belum terkonfirmasi. Silakan coba Submit kembali.';showToast('Gagal mengumpulkan ujian: '+(err&&err.message?err.message:err),'error');setupAutoSave();sessionCheckInt=setInterval(checkCurrentSession,15000);if(autoSubmitOnTimeout&&autoSubmitRetryCount<3){autoSubmitRetryCount++;document.getElementById('autoSaveStatus').innerText='Waktu habis. Mencoba mengumpulkan otomatis kembali ('+autoSubmitRetryCount+'/3)...';autoSubmitRetryTimer=setTimeout(()=>{if(autoSubmitOnTimeout&&!submitPending&&activeExam&&activeExam.id)forceSubmit();},5000);}}).submitExamAnswers(payload,authToken);
-      }else{document.getElementById('examSubmitOverlay').classList.add('hide');submitPending=false;showStudentResult({});activeExam={};}
+      const onSuccess=res=>{
+        submitPending=false;autoSubmitOnTimeout=false;autoSubmitRetryCount=0;clearTimeout(autoSubmitRetryTimer);
+        activeExam={};activeSessionId='';
+        document.getElementById('syncStatus').innerText='🟢 Terhubung';
+        document.getElementById('autoSaveStatus').innerText='Jawaban berhasil dikumpulkan';
+        document.getElementById('examSubmitOverlay').classList.add('hide');
+        sessionStorage.removeItem('cbt_pre_exam');
+        sessionStorage.setItem('cbt_student_view','view-student-dashboard');
+        showStudentResult(res);
+      };
+      const onFailure=err=>{
+        document.getElementById('examSubmitOverlay').classList.add('hide');
+        submitPending=false;btn.disabled=false;
+        btn.innerText=activeQ===questions.length-1?'Selesai & Kumpulkan':'Selanjutnya →';
+        document.getElementById('autoSaveStatus').innerText='Pengumpulan belum terkonfirmasi. Silakan coba Submit kembali.';
+        showToast('Gagal mengumpulkan ujian: '+(err&&err.message?err.message:err),'error');
+        setupAutoSave();sessionCheckInt=setInterval(checkCurrentSession,15000);
+        if(autoSubmitOnTimeout&&autoSubmitRetryCount<3){
+          autoSubmitRetryCount++;
+          document.getElementById('autoSaveStatus').innerText='Waktu habis. Mencoba mengumpulkan otomatis kembali ('+autoSubmitRetryCount+'/3)...';
+          autoSubmitRetryTimer=setTimeout(()=>{if(autoSubmitOnTimeout&&!submitPending&&activeExam&&activeExam.id)forceSubmit();},5000);
+        }
+      };
+      if(serverMode){
+        google.script.run.withSuccessHandler(onSuccess).withFailureHandler(onFailure).submitExamAnswers(payload,authToken);
+        return;
+      }
+      try {
+        const result=await callStudentFunction({action:'submit',examId:payload.examId,sessionId:payload.sessionId,answers:payload.answers},'student-exam');
+        onSuccess(result);
+      } catch(err) { onFailure(err); }
     }
+
 
 document.addEventListener('DOMContentLoaded', restoreLoginAfterReload);
 
