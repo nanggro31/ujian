@@ -1276,7 +1276,7 @@ body::after{
 function downloadTemplate(jenjang) {
   let data = [], filename = "";
   if (currentUploadType === "Siswa") {
-    data = [["Username", "Password", "Name", "ClassID"],["siswa01", "pass123", "Budi Santoso", "VII A"]];
+    data = [["Username", "Password", "Name", "ClassID"],["siswa01", "pass12345", "Budi Santoso", "VII A"]];
     filename = "Template_Upload_Siswa.xlsx";
   } else if (currentUploadType === "Soal") {
     const isSMP = String(jenjang || 'SMA').toUpperCase() === 'SMP';
@@ -1398,20 +1398,66 @@ function downloadTemplate(jenjang) {
           return;
         }
 
-        // Upload data siswa masih menggunakan jalur GAS lama sampai modul tersebut dimigrasikan.
-        if (!serverMode) throw new Error('Upload massal siswa belum dimigrasikan ke Supabase. Fitur ini akan diperbaiki pada tahap Data Siswa.');
-        const legacyRows = [Object.keys(rows[0]), ...rows.map(row => Object.values(row))];
-        google.script.run.withSuccessHandler(async res => {
-          reset();
-          if (res && res.status === 'success') {
-            showToast(res.message || 'Data berhasil disimpan.');
-            closeModal(); input.value = '';
-            if (currentUploadType === 'Siswa') await loadAdminStudents();
+        // Upload massal siswa menggunakan Supabase Edge Function create-student.
+        if (currentUploadType === 'Siswa') {
+          const clean = value => String(value == null ? '' : value).trim();
+          const normalizedRows = rows
+            .filter(row => Object.values(row).some(value => clean(value) !== ''))
+            .map((row, index) => {
+              const get = (...keys) => {
+                for (const key of keys) {
+                  const found = Object.keys(row).find(k => k.trim().toLowerCase() === key.toLowerCase());
+                  if (found !== undefined) return row[found];
+                }
+                return '';
+              };
+              const username = clean(get('Username'));
+              const password = String(get('Password') == null ? '' : get('Password'));
+              const full_name = clean(get('Name', 'FullName', 'Full Name'));
+              const classRaw = clean(get('ClassID', 'ClassId', 'Class ID'));
+              const class_id = classRaw.replace(/\s+/g, '-');
+              if (!username || !password || !full_name || !class_id) {
+                throw new Error(`Baris ${index + 2}: Username, Password, Name, dan ClassID wajib diisi.`);
+              }
+              return { username, password, full_name, class_id, rowNumber: index + 2 };
+            });
+
+          if (!normalizedRows.length) throw new Error('Tidak ada data siswa yang dapat diimpor.');
+
+          let successCount = 0;
+          const failures = [];
+          for (const student of normalizedRows) {
+            try {
+              await callStudentFunction({
+                username: student.username,
+                password: student.password,
+                full_name: student.full_name,
+                class_id: student.class_id
+              }, 'create-student');
+              successCount++;
+            } catch (err) {
+              failures.push(`Baris ${student.rowNumber} (${student.username}): ${err.message || err}`);
+            }
+          }
+
+          if (successCount > 0) {
+            await loadAdminStudents();
             await loadAdminDashboard();
-          } else showToast((res && res.message) || 'Data gagal disimpan.', 'error');
-        }).withFailureHandler(err => {
-          reset(); showToast('Upload gagal: ' + (err && err.message ? err.message : err), 'error');
-        }).apiBulkUpload(currentUploadType, legacyRows, authToken);
+          }
+
+          if (failures.length) {
+            const preview = failures.slice(0, 5).join(' | ');
+            const more = failures.length > 5 ? ` | dan ${failures.length - 5} kesalahan lainnya.` : '';
+            throw new Error(`${successCount} siswa berhasil, ${failures.length} gagal. ${preview}${more}`);
+          }
+
+          showToast(`${successCount} siswa berhasil diimpor ke Supabase.`);
+          closeModal();
+          input.value = '';
+          return;
+        }
+
+        throw new Error('Jenis upload tidak dikenali.');
       } catch (err) {
         showToast('Upload gagal: ' + (err && err.message ? err.message : err), 'error');
       } finally {
@@ -1891,7 +1937,7 @@ function tampilkanFooterHakcipta(tampilkan) {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) {
-        const detail = Array.isArray(result.failed) ? result.failed.map(x => `${x.student_name || x.student_id || 'Siswa'}: ${x.message}`).join(' | ') : '';
+        const detail = Array.isArray(result.failed) ? result.failed.map(x => `${x.student_name || x.student_id || 'Siswa'}: ${x.message}`).join(' | ') : (result.detail || '');
         throw new Error([result.message, detail].filter(Boolean).join(' — ') || `Permintaan siswa gagal. Kode server: ${response.status}`);
       }
       return result;
