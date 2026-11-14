@@ -2786,18 +2786,72 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
 
 
-    function loadStudentDashboard() {
+    async function loadStudentDashboard() {
       // Sembunyikan footer saat dashboard siswa dibuka
       tampilkanFooterHakcipta(false);
 
-      switchView('view-student-dashboard','Ujian Saya');const container=document.getElementById('studentExamList');container.innerHTML='<div class="bg-white p-6 rounded-2xl shadow-soft text-gray-500">Memuat ujian...</div>';
-      if(!serverMode){container.innerHTML='<div class="bg-white p-6 rounded-2xl shadow-soft text-gray-500">Aplikasi harus dibuka melalui Google Apps Script.</div>';return;}
-      // Ambil ringkasan secara paralel dengan daftar ujian agar waktu tunggu tidak dijumlahkan.
-      loadStudentSummary();
-      google.script.run.withSuccessHandler(exams=>{
-        container.innerHTML='';if(!exams||!exams.length)container.innerHTML='<div class="bg-white p-6 rounded-2xl shadow-soft text-gray-500">Belum ada ujian yang dijadwalkan untuk kelas Anda.</div>';
-        (exams||[]).forEach(ex=>{const card=document.createElement('div');card.className='bg-white p-6 rounded-2xl shadow-soft border-l-4 border-primary';const h=document.createElement('h5');h.className='text-lg font-bold mb-1';h.textContent=ex.name||'Ujian';const p=document.createElement('p');p.className='text-sm text-gray-500 mb-2';p.textContent='Mapel: '+(ex.subject||'-')+' | Durasi: '+ex.duration+' Menit | KKM: '+ex.kkm;const schedule=document.createElement('p');schedule.className='text-xs text-gray-500 mb-4';schedule.textContent='Jadwal: '+(ex.startAt?ex.startAt.replace('T',' '):'Segera')+' – '+(ex.endAt?ex.endAt.replace('T',' '):'Sesuai durasi');const avail=document.createElement('p');avail.className='text-sm mb-3 '+(ex.availability==='Dapat diikuti'?'text-green-600':'text-orange-600');avail.textContent=ex.availability;const btn=document.createElement('button');btn.className='w-full py-2 bg-primary text-white rounded-xl font-medium disabled:opacity-40';btn.textContent='Buka Ujian';btn.disabled=ex.availability!=='Dapat diikuti';btn.onclick=()=>openPreExam(ex.id,ex.name,ex.duration,ex.kkm);card.append(h,p,schedule,avail,btn);container.appendChild(card);});
-      }).withFailureHandler(err=>{container.innerHTML='<div class="bg-white p-6 rounded-2xl shadow-soft text-red-600">Gagal memuat ujian: '+(err&&err.message?err.message:err)+'</div>';showToast('Gagal memuat daftar ujian: '+(err&&err.message?err.message:err),'error');}).getStudentExams(currentUser.classId,authToken);
+      switchView('view-student-dashboard', 'Ujian Saya');
+      const container = document.getElementById('studentExamList');
+      container.innerHTML = '<div class="bg-white p-6 rounded-2xl shadow-soft text-gray-500">Memuat ujian...</div>';
+
+      // Pertahankan jalur Google Apps Script untuk aplikasi versi lama.
+      if (serverMode) {
+        loadStudentSummary();
+        google.script.run
+          .withSuccessHandler(renderStudentExamCards)
+          .withFailureHandler(showStudentExamError)
+          .getStudentExams(currentUser.classId, authToken);
+        return;
+      }
+
+      // GitHub Pages: ambil daftar ujian dari Supabase Edge Function.
+      try {
+        const result = await callStudentFunction(
+          { action: 'student-list' },
+          'manage-exams'
+        );
+        renderStudentExamCards(result.exams || []);
+      } catch (err) {
+        showStudentExamError(err);
+      }
+
+      function renderStudentExamCards(exams) {
+        container.innerHTML = '';
+        if (!exams || !exams.length) {
+          container.innerHTML = '<div class="bg-white p-6 rounded-2xl shadow-soft text-gray-500">Belum ada ujian yang dijadwalkan untuk kelas Anda.</div>';
+          return;
+        }
+
+        exams.forEach(ex => {
+          const card = document.createElement('div');
+          card.className = 'bg-white p-6 rounded-2xl shadow-soft border-l-4 border-primary';
+          const h = document.createElement('h5');
+          h.className = 'text-lg font-bold mb-1';
+          h.textContent = ex.name || 'Ujian';
+          const p = document.createElement('p');
+          p.className = 'text-sm text-gray-500 mb-2';
+          p.textContent = 'Mapel: ' + (ex.subject || '-') + ' | Durasi: ' + ex.duration + ' Menit | KKM: ' + ex.kkm;
+          const schedule = document.createElement('p');
+          schedule.className = 'text-xs text-gray-500 mb-4';
+          schedule.textContent = 'Jadwal: ' + (ex.startAt ? ex.startAt.replace('T', ' ') : 'Segera') + ' – ' + (ex.endAt ? ex.endAt.replace('T', ' ') : 'Sesuai durasi');
+          const avail = document.createElement('p');
+          avail.className = 'text-sm mb-3 ' + (ex.availability === 'Dapat diikuti' ? 'text-green-600' : 'text-orange-600');
+          avail.textContent = ex.availability;
+          const btn = document.createElement('button');
+          btn.className = 'w-full py-2 bg-primary text-white rounded-xl font-medium disabled:opacity-40';
+          btn.textContent = 'Buka Ujian';
+          btn.disabled = ex.availability !== 'Dapat diikuti';
+          btn.onclick = () => openPreExam(ex.id, ex.name, ex.duration, ex.kkm);
+          card.append(h, p, schedule, avail, btn);
+          container.appendChild(card);
+        });
+      }
+
+      function showStudentExamError(err) {
+        const message = err && err.message ? err.message : String(err);
+        container.innerHTML = '<div class="bg-white p-6 rounded-2xl shadow-soft text-red-600">Gagal memuat ujian: ' + message + '</div>';
+        showToast('Gagal memuat daftar ujian: ' + message, 'error');
+      }
     }
     function loadStudentSummary(){
       google.script.run.withSuccessHandler(data=>{
