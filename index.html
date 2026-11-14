@@ -2971,23 +2971,86 @@ function tampilkanFooterHakcipta(tampilkan) {
       document.getElementById('inputToken').value = '';
     }
 
-    function verifyTokenAndStart() {
+    async function verifyTokenAndStart() {
       const token = document.getElementById('inputToken').value.trim();
-      if(!token) return showToast('Masukkan token ujian!', 'error');
-      const startBtn=document.getElementById('btnStartExam'), loading=document.getElementById('examLoading');if(startBtn.disabled)return;startBtn.disabled=true;startBtn.textContent='Memuat Ujian...';loading.classList.remove('hide');document.getElementById('examStartOverlay').classList.remove('hide');
-      const resetStart=()=>{startBtn.disabled=false;startBtn.textContent='Mulai Ujian';loading.classList.add('hide');document.getElementById('examStartOverlay').classList.add('hide');};
-      
+      if (!token) return showToast('Masukkan token ujian!', 'error');
+      if (!activeExam || !activeExam.id) return showToast('Data ujian tidak ditemukan. Silakan pilih ujian kembali.', 'error');
+
+      const startBtn = document.getElementById('btnStartExam');
+      const loading = document.getElementById('examLoading');
+      const overlay = document.getElementById('examStartOverlay');
+      if (startBtn.disabled) return;
+
+      startBtn.disabled = true;
+      startBtn.textContent = 'Memuat Ujian...';
+      loading.classList.remove('hide');
+      overlay.classList.remove('hide');
+
+      const resetStart = () => {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Mulai Ujian';
+        loading.classList.add('hide');
+        overlay.classList.add('hide');
+      };
+
       document.getElementById('syncStatus').innerText = '🔄 Memverifikasi...';
-      if(serverMode) {
-        google.script.run.withSuccessHandler(res => {
-          if(res.status === 'success') { startExamSession(res.questions, res.remainingSeconds, res.sessionId); resetStart(); }
-          else { showToast(res.message, 'error'); document.getElementById('syncStatus').innerText = '🟢 Terhubung'; resetStart(); }
-        }).withFailureHandler(err => { showToast('Gagal memverifikasi ujian: ' + (err && err.message ? err.message : err), 'error'); document.getElementById('syncStatus').innerText = '🟢 Terhubung'; resetStart(); }).verifyToken(activeExam.id, token, authToken);
-      } else {
-        if(token === '1234') startExamSession([
-          {id:'Q1', text:'Berapa 5+5?', options:['5','10','15','20']},
-          {id:'Q2', text:'Ibukota RI?', options:['Bali','IKN','Jakarta','Medan']}
-        ]); else {showToast('Token Salah', 'error');resetStart();}
+
+      // Jalur GAS lama tetap dipertahankan jika mode GAS memang diaktifkan.
+      if (serverMode) {
+        google.script.run
+          .withSuccessHandler(res => {
+            if (res && res.status === 'success') {
+              try {
+                if (!Array.isArray(res.questions) || !res.questions.length) {
+                  throw new Error('Server tidak mengirimkan daftar soal ujian.');
+                }
+                startExamSession(res.questions, res.remainingSeconds, res.sessionId);
+              } catch (err) {
+                showToast(err.message || 'Data ujian dari server tidak valid.', 'error');
+                document.getElementById('syncStatus').innerText = '🟢 Terhubung';
+              } finally {
+                resetStart();
+              }
+            } else {
+              showToast((res && res.message) || 'Verifikasi token gagal.', 'error');
+              document.getElementById('syncStatus').innerText = '🟢 Terhubung';
+              resetStart();
+            }
+          })
+          .withFailureHandler(err => {
+            showToast('Gagal memverifikasi ujian: ' + (err && err.message ? err.message : err), 'error');
+            document.getElementById('syncStatus').innerText = '🟢 Terhubung';
+            resetStart();
+          })
+          .verifyToken(activeExam.id, token, authToken);
+        return;
+      }
+
+      // GitHub Pages + Supabase: token wajib diverifikasi oleh Edge Function.
+      try {
+        const result = await callStudentFunction({
+          action: 'verify-token',
+          examId: activeExam.id,
+          token: token
+        }, 'student-exam');
+
+        if (!Array.isArray(result.questions) || result.questions.length === 0) {
+          throw new Error('Token diverifikasi, tetapi server tidak mengirimkan daftar soal ujian.');
+        }
+        if (!result.sessionId) {
+          throw new Error('Server tidak mengirimkan ID sesi ujian.');
+        }
+        if (result.remainingSeconds === undefined || result.remainingSeconds === null || !Number.isFinite(Number(result.remainingSeconds))) {
+          throw new Error('Server tidak mengirimkan sisa waktu ujian yang valid.');
+        }
+
+        startExamSession(result.questions, Number(result.remainingSeconds), result.sessionId);
+      } catch (err) {
+        console.error('Verifikasi token Supabase gagal:', err);
+        showToast(err && err.message ? err.message : 'Gagal memverifikasi token ujian.', 'error');
+        document.getElementById('syncStatus').innerText = '🟢 Terhubung';
+      } finally {
+        resetStart();
       }
     }
 
