@@ -2582,68 +2582,155 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
 
     function loadMonitor() {
-      if(!currentUser || currentUser.role !== 'admin') { showToast('Monitor Sesi Aktif hanya dapat diakses Admin.','error'); return; }
+      if(!currentUser || currentUser.role !== 'admin') {
+        showToast('Monitor Sesi Aktif hanya dapat diakses Admin.','error');
+        return;
+      }
       switchView('view-admin-monitor','Monitor Sesi Aktif');
-      const tbody=document.getElementById('tableMonitor');tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Memuat status peserta...</td></tr>';
+      const tbody=document.getElementById('tableMonitor');
+      tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Memuat status peserta...</td></tr>';
       clearInterval(monitorPollInt);
       pollAdminMonitor(true);
       monitorPollInt = setInterval(() => pollAdminMonitor(false), 15000);
     }
-    function pollAdminMonitor(forceRender=false) {
-      if(!serverMode || !currentUser || currentUser.role!=='admin' || !authToken)return;
-      google.script.run.withSuccessHandler(list=>{
+
+    async function pollAdminMonitor(forceRender=false) {
+      if(!currentUser || currentUser.role!=='admin') return;
+      try {
+        const result = await callAdminSupabaseFunction('admin-monitor', { action: 'list' }, 'Monitor sesi');
         monitorErrorShown = false;
-        list=list||[];
+        const list = Array.isArray(result.sessions) ? result.sessions : [];
         list.forEach(s=>{
           const old=previousMonitorStatuses[s.sessionId];
           if(old==='Active' && s.status==='Disconnected') {
-            showToast('Siswa '+s.student+' memilih Keluar dari aplikasi ujian. Peringatan tetap ada sampai admin menekan Lanjutkan.','error');
+            showToast('Siswa '+s.student+' terputus dari aplikasi ujian. Admin dapat menyetujui sesi untuk dilanjutkan.','error');
           }
           previousMonitorStatuses[s.sessionId]=s.status;
         });
         const disconnected=list.filter(s=>s.status==='Disconnected');
         const alertBox=document.getElementById('monitorAlerts');
         if(alertBox){
-          if(disconnected.length){alertBox.classList.remove('hidden');alertBox.textContent='⚠️ '+disconnected.length+' siswa memilih Keluar dari aplikasi ujian: '+disconnected.map(s=>s.student+' ('+s.classId+')').join(', ')+'. Peringatan ini tetap ditampilkan sampai admin menekan tombol Lanjutkan.';}
-          else {alertBox.classList.add('hidden');alertBox.textContent='';}
+          if(disconnected.length){
+            alertBox.classList.remove('hidden');
+            alertBox.textContent='⚠️ '+disconnected.length+' siswa terputus dari aplikasi ujian: '+disconnected.map(s=>s.student+' ('+s.classId+')').join(', ')+'. Admin dapat meninjau dan menyetujui sesi untuk dilanjutkan.';
+          } else {
+            alertBox.classList.add('hidden');
+            alertBox.textContent='';
+          }
         }
-        const monitorVisible=!document.getElementById('view-admin-monitor').classList.contains('hide');
-        if(forceRender||monitorVisible){renderMonitorRows(list);loadAntiCheatLogs();}
-      }).withFailureHandler(err=>{
-        if(!monitorErrorShown && (forceRender||!document.getElementById('view-admin-monitor').classList.contains('hide'))){
+        const monitorView=document.getElementById('view-admin-monitor');
+        const monitorVisible=monitorView && !monitorView.classList.contains('hide');
+        if(forceRender||monitorVisible){
+          renderMonitorRows(list);
+          renderAntiCheatLogs((result.logs||[]).map(log=>{
+            const session=list.find(s=>s.sessionId===log.session_id) || {};
+            return {
+              occurredAt:log.occurred_at,
+              student:session.student || log.user_id || 'Siswa',
+              classId:session.classId || '',
+              examName:session.examName || log.exam_id || '-',
+              type:log.violation_type,
+              details:log.details
+            };
+          }));
+        }
+      } catch(err) {
+        if(!monitorErrorShown && (forceRender || !document.getElementById('view-admin-monitor').classList.contains('hide'))){
           monitorErrorShown = true;
-          showToast('Monitor sementara gagal diperbarui. Periksa koneksi, lalu gunakan Refresh jika perlu.','error');
+          showToast('Monitor gagal diperbarui: '+(err && err.message ? err.message : err),'error');
+          const tbody=document.getElementById('tableMonitor');
+          if(tbody)tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-red-500">Gagal memuat monitor. Silakan tekan Refresh.</td></tr>';
         }
-      }).getAdminMonitor(authToken);
+      }
     }
+
     function renderMonitorRows(list) {
-      const tbody=document.getElementById('tableMonitor');tbody.innerHTML='';
-      if(!list.length){tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada sesi ujian.</td></tr>';return;}
+      const tbody=document.getElementById('tableMonitor');
+      tbody.innerHTML='';
+      if(!list.length){
+        tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada sesi ujian.</td></tr>';
+        return;
+      }
       list.forEach(s=>{
-        const tr=document.createElement('tr');tr.className='border-b border-gray-100';
-        const info=s.student+' ('+s.classId+')';
-        const detail=s.examName+' - '+s.subject;
-        const statusText=(s.status==='Disconnected'?'Keluar dari aplikasi — menunggu admin':s.status==='Active'?'Aktif':s.status)+' | Pelanggaran: '+(s.violationCount||0);
-        [info,detail,statusText+(s.lastHeartbeat?' | Aktivitas terakhir: '+s.lastHeartbeat:'')].forEach((v,i)=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v||'-';if(i===2){td.className+=' '+(s.status==='Disconnected'?'text-red-600 font-semibold':s.status==='Active'?'text-green-600':'text-gray-600');}tr.appendChild(td);});
-        const td=document.createElement('td');td.className='py-3';
-        if(s.status==='Active'||s.status==='Disconnected'){
-          const stop=document.createElement('button');stop.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg mr-1 mb-1';stop.textContent='Hentikan';stop.onclick=()=>stopParticipant(s);td.appendChild(stop);
-          const resume=document.createElement('button');resume.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mb-1';resume.textContent=s.status==='Disconnected'?'Lanjutkan':'Reset Status';resume.onclick=()=>allowReentry(s);td.appendChild(resume);
-        } else if(s.status==='Blocked'){const reason=document.createElement('div');reason.className='text-xs text-red-600 mb-2';reason.textContent=s.reason||'Diblokir admin';const approve=document.createElement('button');approve.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg';approve.textContent='Setujui Masuk Kembali';approve.onclick=()=>allowReentry(s);td.append(reason,approve);} else {td.textContent=s.reason||'-';}
-        tr.appendChild(td);tbody.appendChild(tr);
+        const tr=document.createElement('tr');
+        tr.className='border-b border-gray-100';
+        const info=(s.student||s.userId||'Siswa')+' ('+(s.classId||'-')+')';
+        const detail=(s.examName||s.examId||'-')+' - '+(s.subject||'-');
+        const statusLabels={Active:'Aktif',Disconnected:'Terputus — menunggu Admin',Blocked:'Diblokir Admin',Submitted:'Selesai Dikumpulkan',Completed:'Selesai',Expired:'Kedaluwarsa'};
+        const statusText=(statusLabels[s.status]||s.status||'Tidak diketahui')+' | Pelanggaran: '+(s.violationCount||0);
+        [info,detail,statusText+(s.lastHeartbeat?' | Aktivitas terakhir: '+new Date(s.lastHeartbeat).toLocaleString('id-ID'):'')].forEach((v,i)=>{
+          const td=document.createElement('td');
+          td.className='py-3 pr-3';
+          td.textContent=v||'-';
+          if(i===2){
+            td.className+=' '+(s.status==='Disconnected'||s.status==='Blocked'?'text-red-600 font-semibold':s.status==='Active'?'text-green-600':s.status==='Submitted'||s.status==='Completed'?'text-blue-700':'text-gray-600');
+          }
+          tr.appendChild(td);
+        });
+        const td=document.createElement('td');
+        td.className='py-3';
+        if(s.status==='Active'){
+          const stop=document.createElement('button');
+          stop.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg mr-1 mb-1';
+          stop.textContent='Hentikan';
+          stop.onclick=()=>stopParticipant(s);
+          td.appendChild(stop);
+        } else if(s.status==='Disconnected'||s.status==='Blocked'){
+          const reason=document.createElement('div');
+          reason.className='text-xs text-red-600 mb-2';
+          reason.textContent=s.reason|| (s.status==='Blocked'?'Diblokir Admin':'Koneksi terputus');
+          const approve=document.createElement('button');
+          approve.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mb-1';
+          approve.textContent='Setujui Lanjutkan';
+          approve.onclick=()=>allowReentry(s);
+          td.append(reason,approve);
+        } else if(s.status==='Submitted'||s.status==='Completed'){
+          const note=document.createElement('div');
+          note.className='text-xs text-gray-500 mb-2';
+          note.textContent='Ujian telah dikumpulkan. Buka ulang akan membuat percobaan baru.';
+          const reopen=document.createElement('button');
+          reopen.className='bg-amber-50 text-amber-700 px-3 py-1 rounded-lg';
+          reopen.textContent='Buka Ulang';
+          reopen.onclick=()=>reopenCompleted(s);
+          td.append(note,reopen);
+        } else {
+          td.textContent=s.reason||'-';
+        }
+        tr.appendChild(td);
+        tbody.appendChild(tr);
       });
     }
+
     function stopParticipant(s) {
-      showAppConfirm('Tuliskan alasan penghentian sesi untuk peserta '+s.student+'.',reason=>{
+      showAppConfirm('Tuliskan alasan penghentian sesi untuk peserta '+s.student+'.',async reason=>{
         if(!reason){showToast('Alasan wajib diisi.','error');return;}
-        google.script.run.withSuccessHandler(res=>{showToast(res.message||'Sesi dihentikan.');loadMonitor();})
-          .withFailureHandler(err=>showToast('Gagal menghentikan sesi: '+(err&&err.message?err.message:err),'error')).apiStopSession(s.sessionId,reason,authToken);
+        try{
+          const result=await callAdminSupabaseFunction('admin-monitor',{action:'stop',sessionId:s.sessionId,reason},'Hentikan sesi');
+          showToast(result.message||'Sesi dihentikan.');
+          await pollAdminMonitor(true);
+        }catch(err){showToast('Gagal menghentikan sesi: '+(err&&err.message?err.message:err),'error');}
       },'Hentikan Sesi Ujian','Ya, Hentikan','Contoh: Pelanggaran tata tertib ujian');
       document.getElementById('appConfirmInput').value='Pelanggaran tata tertib ujian';
     }
+
     function allowReentry(s) {
-      showAppConfirm('Izinkan '+s.student+' login ulang dan melanjutkan ujian?',()=>google.script.run.withSuccessHandler(res=>{showToast(res.message||'Status sesi diperbarui.');loadMonitor();})
-        .withFailureHandler(err=>showToast('Gagal memperbarui sesi: '+(err&&err.message?err.message:err),'error')).apiAllowReentry(s.sessionId,authToken),'Izinkan Login Ulang','Ya, Izinkan');
+      showAppConfirm('Izinkan '+s.student+' melanjutkan sesi ujian yang terputus atau diblokir?',async()=>{
+        try{
+          const result=await callAdminSupabaseFunction('admin-monitor',{action:'allow-reentry',sessionId:s.sessionId},'Persetujuan melanjutkan sesi');
+          showToast(result.message||'Siswa diizinkan melanjutkan ujian.');
+          await pollAdminMonitor(true);
+        }catch(err){showToast('Gagal memberikan persetujuan: '+(err&&err.message?err.message:err),'error');}
+      },'Setujui Lanjutkan','Ya, Setujui');
+    }
+
+    function reopenCompleted(s) {
+      showAppConfirm('Buka ulang ujian untuk '+s.student+'? Persetujuan ini hanya berlaku satu kali dan akan membuat percobaan baru. Nilai sebelumnya tetap tersimpan.',async()=>{
+        try{
+          const result=await callAdminSupabaseFunction('admin-monitor',{action:'reopen-completed',sessionId:s.sessionId},'Buka ulang ujian');
+          showToast(result.message||'Persetujuan buka ulang berhasil diberikan.');
+          await pollAdminMonitor(true);
+        }catch(err){showToast('Gagal membuka ulang ujian: '+(err&&err.message?err.message:err),'error');}
+      },'Persetujuan Buka Ulang','Ya, Buka Ulang');
     }
     function reportFilters() {
       return {dateFrom:document.getElementById('reportDateFrom').value,dateTo:document.getElementById('reportDateTo').value,
@@ -2884,50 +2971,23 @@ function tampilkanFooterHakcipta(tampilkan) {
       document.getElementById('inputToken').value = '';
     }
 
-    async function verifyTokenAndStart() {
+    function verifyTokenAndStart() {
       const token = document.getElementById('inputToken').value.trim();
-      if (!token) return showToast('Masukkan token ujian!', 'error');
-      const startBtn = document.getElementById('btnStartExam');
-      const loading = document.getElementById('examLoading');
-      if (startBtn.disabled) return;
-      startBtn.disabled = true;
-      startBtn.textContent = 'Memuat Ujian...';
-      loading.classList.remove('hide');
-      document.getElementById('examStartOverlay').classList.remove('hide');
-      const resetStart = () => {
-        startBtn.disabled = false;
-        startBtn.textContent = 'Mulai Ujian';
-        loading.classList.add('hide');
-        document.getElementById('examStartOverlay').classList.add('hide');
-      };
+      if(!token) return showToast('Masukkan token ujian!', 'error');
+      const startBtn=document.getElementById('btnStartExam'), loading=document.getElementById('examLoading');if(startBtn.disabled)return;startBtn.disabled=true;startBtn.textContent='Memuat Ujian...';loading.classList.remove('hide');document.getElementById('examStartOverlay').classList.remove('hide');
+      const resetStart=()=>{startBtn.disabled=false;startBtn.textContent='Mulai Ujian';loading.classList.add('hide');document.getElementById('examStartOverlay').classList.add('hide');};
+      
       document.getElementById('syncStatus').innerText = '🔄 Memverifikasi...';
-      try {
-        if (serverMode) {
-          google.script.run.withSuccessHandler(res => {
-            if (res && res.status === 'success') {
-              startExamSession(res.questions, res.remainingSeconds, res.sessionId);
-            } else {
-              showToast(res && res.message ? res.message : 'Token tidak dapat diverifikasi.', 'error');
-            }
-            resetStart();
-          }).withFailureHandler(err => {
-            showToast('Gagal memverifikasi ujian: ' + (err && err.message ? err.message : err), 'error');
-            resetStart();
-          }).verifyToken(activeExam.id, token, authToken);
-          return;
-        }
-        const result = await callStudentFunction({
-          action: 'verify-token', examId: activeExam.id, token
-        }, 'student-exam');
-        if (!result.questions || !result.questions.length || !result.sessionId) {
-          throw new Error('Server tidak mengirimkan soal atau sesi ujian.');
-        }
-        startExamSession(result.questions, result.remainingSeconds, result.sessionId);
-      } catch (err) {
-        document.getElementById('syncStatus').innerText = '🟢 Terhubung';
-        showToast('Gagal memulai ujian: ' + (err && err.message ? err.message : err), 'error');
-      } finally {
-        resetStart();
+      if(serverMode) {
+        google.script.run.withSuccessHandler(res => {
+          if(res.status === 'success') { startExamSession(res.questions, res.remainingSeconds, res.sessionId); resetStart(); }
+          else { showToast(res.message, 'error'); document.getElementById('syncStatus').innerText = '🟢 Terhubung'; resetStart(); }
+        }).withFailureHandler(err => { showToast('Gagal memverifikasi ujian: ' + (err && err.message ? err.message : err), 'error'); document.getElementById('syncStatus').innerText = '🟢 Terhubung'; resetStart(); }).verifyToken(activeExam.id, token, authToken);
+      } else {
+        if(token === '1234') startExamSession([
+          {id:'Q1', text:'Berapa 5+5?', options:['5','10','15','20']},
+          {id:'Q2', text:'Ibukota RI?', options:['Bali','IKN','Jakarta','Medan']}
+        ]); else {showToast('Token Salah', 'error');resetStart();}
       }
     }
 
@@ -3105,13 +3165,28 @@ function tampilkanFooterHakcipta(tampilkan) {
         }
       },true);
     }
-    function loadAntiCheatLogs(){
-      if(!serverMode||!currentUser||currentUser.role!=='admin')return;
+    async function loadAntiCheatLogs(){
+      if(!currentUser||currentUser.role!=='admin')return;
       const tbody=document.getElementById('tableAntiCheatLogs');
       if(tbody)tbody.innerHTML='<tr><td colspan="5" class="py-3 text-gray-400">Memuat riwayat...</td></tr>';
-      google.script.run.withSuccessHandler(res=>renderAntiCheatLogs(res&&res.logs||[]))
-        .withFailureHandler(err=>{if(tbody)tbody.innerHTML='<tr><td colspan="5" class="py-3 text-red-500">Gagal memuat riwayat pelanggaran.</td></tr>';})
-        .getAdminAntiCheatLogs(authToken,300);
+      try{
+        const result=await callAdminSupabaseFunction('admin-monitor',{action:'list'},'Riwayat anti-contek');
+        const sessions=result.sessions||[];
+        const logs=(result.logs||[]).map(log=>{
+          const session=sessions.find(s=>s.sessionId===log.session_id)||{};
+          return {
+            occurredAt:log.occurred_at,
+            student:session.student||log.user_id||'Siswa',
+            classId:session.classId||'',
+            examName:session.examName||log.exam_id||'-',
+            type:log.violation_type,
+            details:log.details
+          };
+        });
+        renderAntiCheatLogs(logs);
+      }catch(err){
+        if(tbody)tbody.innerHTML='<tr><td colspan="5" class="py-3 text-red-500">Gagal memuat riwayat: '+(err&&err.message?String(err.message):'Kesalahan server')+'</td></tr>';
+      }
     }
     function renderAntiCheatLogs(logs){
       const tbody=document.getElementById('tableAntiCheatLogs');if(!tbody)return;tbody.innerHTML='';
@@ -3125,31 +3200,17 @@ function tampilkanFooterHakcipta(tampilkan) {
       });
     }
 
-    async function checkCurrentSession() {
-      if (!activeExam.id || !activeSessionId || !document.getElementById('view-exam-room') || document.getElementById('view-exam-room').classList.contains('hide')) return;
-      try {
-        let res;
-        if (serverMode) {
-          res = await new Promise((resolve, reject) => {
-            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-              .apiCheckSession(activeExam.id, authToken, activeSessionId);
-          });
-        } else {
-          res = await callStudentFunction({ action: 'check-session', sessionId: activeSessionId }, 'student-exam');
-        }
-        sessionCheckErrorShown = false;
-        if (!res || res.status !== 'Active') {
-          clearInterval(timerInt); clearInterval(saveInt); clearInterval(sessionCheckInt);
-          activeExam = {}; activeSessionId = '';
-          showToast(res && res.message ? res.message : 'Sesi ujian tidak lagi aktif.', 'error');
+    function checkCurrentSession() {
+      if(!serverMode || !activeExam.id || document.getElementById('view-exam-room').classList.contains('hide'))return;
+      google.script.run.withSuccessHandler(res=>{
+        sessionCheckErrorShown=false;
+        if(!res||res.status!=='Active'){
+          clearInterval(timerInt);clearInterval(saveInt);clearInterval(sessionCheckInt);
+          activeExam={};activeSessionId='';
+          showToast(res&&res.message?res.message:'Sesi ujian tidak lagi aktif.','error');
           loadStudentDashboard();
         }
-      } catch (err) {
-        if (!sessionCheckErrorShown) {
-          sessionCheckErrorShown = true;
-          showToast('Koneksi pemantauan terganggu. Jawaban tetap disimpan otomatis saat koneksi pulih.', 'error');
-        }
-      }
+      }).withFailureHandler(err=>{if(!sessionCheckErrorShown){sessionCheckErrorShown=true;showToast('Koneksi pemantauan terganggu. Jawaban tetap disimpan otomatis saat koneksi pulih.','error');}}).apiCheckSession(activeExam.id,authToken,activeSessionId);
     }
 
     // Siapkan beberapa endpoint gambar untuk tautan Google Drive lama/baru.
@@ -3325,43 +3386,31 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
 
     function triggerAutoSave() {
-      if (!activeExam.id || !activeSessionId || submitPending) return;
+      if(!serverMode || !activeExam.id || submitPending)return;
       clearTimeout(autoSaveTimer);
-      const indicator = document.getElementById('autoSaveStatus');
-      if (indicator) indicator.innerText = 'Perubahan jawaban...';
-      autoSaveTimer = setTimeout(() => sendAutoSave(false), 900);
+      const indicator=document.getElementById('autoSaveStatus');
+      if(indicator)indicator.innerText='Perubahan jawaban...';
+      autoSaveTimer=setTimeout(()=>sendAutoSave(false),900);
     }
 
-    async function sendAutoSave(fromInterval) {
-      if (!activeExam.id || !activeSessionId || submitPending || !currentUser) return;
-      if (autoSaveInFlight) { autoSaveQueued = true; return; }
-      autoSaveInFlight = true;
-      autoSaveQueued = false;
-      const indicator = document.getElementById('autoSaveStatus');
-      if (indicator) { indicator.innerText = 'Menyimpan...'; indicator.classList.add('text-primary'); }
-      const payloadAnswers = questions.map((q, i) => ({
-        qId: q.id,
-        ans: Array.isArray(answers[i]) ? JSON.stringify(answers[i]) : answers[i]
-      }));
-      try {
-        if (serverMode) {
-          await new Promise((resolve, reject) => {
-            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-              .apiAutoSave(currentUser.id, activeExam.id, payloadAnswers, authToken, activeSessionId);
-          });
-        } else {
-          await callStudentFunction({ action: 'save-answers', sessionId: activeSessionId, answers: payloadAnswers }, 'student-exam');
-        }
-        if (indicator) { indicator.innerText = 'Tersimpan'; indicator.classList.remove('text-primary'); }
-      } catch (err) {
-        if (indicator) { indicator.innerText = 'Belum tersimpan — koneksi diperiksa'; indicator.classList.remove('text-primary'); }
-      } finally {
-        autoSaveInFlight = false;
-        if (autoSaveQueued && !submitPending) { autoSaveQueued = false; sendAutoSave(false); }
-        else if (indicator && indicator.innerText === 'Tersimpan') {
-          setTimeout(() => { if (indicator.innerText === 'Tersimpan') indicator.innerText = ''; }, 2500);
-        }
-      }
+    function sendAutoSave(fromInterval) {
+      if(!serverMode || !activeExam.id || submitPending || !currentUser)return;
+      if(autoSaveInFlight){autoSaveQueued=true;return;}
+      autoSaveInFlight=true;autoSaveQueued=false;
+      const indicator=document.getElementById('autoSaveStatus');
+      if(indicator){indicator.innerText='Menyimpan...';indicator.classList.add('text-primary');}
+      const payloadAnswers=questions.map((q,i)=>({qId:q.id,ans:Array.isArray(answers[i])?JSON.stringify(answers[i]):answers[i]}));
+      google.script.run.withSuccessHandler(()=>{
+        autoSaveInFlight=false;
+        if(indicator){indicator.innerText='Tersimpan';indicator.classList.remove('text-primary');}
+        if(autoSaveQueued&&!submitPending){autoSaveQueued=false;sendAutoSave(false);}
+        else if(indicator)setTimeout(()=>{if(indicator.innerText==='Tersimpan')indicator.innerText='';},2500);
+      }).withFailureHandler(err=>{
+        autoSaveInFlight=false;
+        if(indicator){indicator.innerText='Belum tersimpan — koneksi diperiksa';indicator.classList.remove('text-primary');}
+        // Tidak menampilkan toast untuk setiap autosave; status terlihat di ruang ujian.
+        if(autoSaveQueued&&!submitPending){autoSaveQueued=false;sendAutoSave(false);}
+      }).apiAutoSave(currentUser.id,activeExam.id,payloadAnswers,authToken,activeSessionId);
     }
 
     function confirmSubmit() {
@@ -3389,59 +3438,12 @@ function tampilkanFooterHakcipta(tampilkan) {
       if(res&&res.score!==undefined){[['Jawaban benar',res.correctCount],['Jawaban salah',res.wrongCount],['Jumlah soal',res.questionCount],['Poin',String(res.earnedPoints??'-')+' / '+String(res.totalPoints??'-')]].forEach(pair=>{const d=document.createElement('div');d.className='bg-gray-50 rounded-xl p-3';const l=document.createElement('p');l.className='text-xs text-gray-500';l.textContent=pair[0];const v=document.createElement('p');v.className='text-lg font-bold';v.textContent=pair[1]??'-';d.append(l,v);box.appendChild(d);});}
       document.getElementById('studentResultModal').classList.remove('hide');
     }
-    async function forceSubmit() {
-      if (submitPending) return;
-      submitPending = true;
-      clearInterval(timerInt); clearInterval(saveInt); clearTimeout(autoSaveTimer); clearInterval(sessionCheckInt);
-      const btn = document.getElementById('btnNextQuestion');
-      btn.innerText = 'Mengirim jawaban...';
-      btn.disabled = true;
-      document.getElementById('examSubmitOverlay').classList.remove('hide');
-      document.getElementById('autoSaveStatus').innerText = 'Mengirim seluruh jawaban ke server. Mohon jangan tutup halaman...';
-      const payload = {
-        examId: activeExam.id,
-        sessionId: activeSessionId,
-        answers: answers.map((a, i) => ({ qId: questions[i].id, ans: Array.isArray(a) ? JSON.stringify(a) : a }))
-      };
-      try {
-        let result;
-        if (serverMode) {
-          result = await new Promise((resolve, reject) => {
-            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-              .submitExamAnswers({ ...payload, userId: currentUser.id }, authToken);
-          });
-        } else {
-          result = await callStudentFunction({ action: 'submit', ...payload }, 'student-exam');
-        }
-        submitPending = false;
-        autoSubmitOnTimeout = false;
-        autoSubmitRetryCount = 0;
-        clearTimeout(autoSubmitRetryTimer);
-        activeExam = {};
-        activeSessionId = '';
-        document.getElementById('syncStatus').innerText = '🟢 Terhubung';
-        document.getElementById('autoSaveStatus').innerText = 'Jawaban berhasil dikumpulkan';
-        document.getElementById('examSubmitOverlay').classList.add('hide');
-        sessionStorage.removeItem('cbt_pre_exam');
-        sessionStorage.setItem('cbt_student_view', 'view-student-dashboard');
-        showStudentResult(result);
-      } catch (err) {
-        document.getElementById('examSubmitOverlay').classList.add('hide');
-        submitPending = false;
-        btn.disabled = false;
-        btn.innerText = activeQ === questions.length - 1 ? 'Selesai & Kumpulkan' : 'Selanjutnya →';
-        document.getElementById('autoSaveStatus').innerText = 'Pengumpulan belum terkonfirmasi. Silakan coba Submit kembali.';
-        showToast('Gagal mengumpulkan ujian: ' + (err && err.message ? err.message : err), 'error');
-        setupAutoSave();
-        sessionCheckInt = setInterval(checkCurrentSession, 15000);
-        if (autoSubmitOnTimeout && autoSubmitRetryCount < 3) {
-          autoSubmitRetryCount++;
-          document.getElementById('autoSaveStatus').innerText = 'Waktu habis. Mencoba mengumpulkan otomatis kembali (' + autoSubmitRetryCount + '/3)...';
-          autoSubmitRetryTimer = setTimeout(() => {
-            if (autoSubmitOnTimeout && !submitPending && activeExam && activeExam.id) forceSubmit();
-          }, 5000);
-        }
-      }
+    function forceSubmit() {
+      if(submitPending)return;submitPending=true;clearInterval(timerInt);clearInterval(saveInt);clearTimeout(autoSaveTimer);clearInterval(sessionCheckInt);
+      const btn=document.getElementById('btnNextQuestion');btn.innerText='Mengirim jawaban...';btn.disabled=true;document.getElementById('examSubmitOverlay').classList.remove('hide');document.getElementById('autoSaveStatus').innerText='Mengirim seluruh jawaban ke server. Mohon jangan tutup halaman...';
+      const payload={userId:currentUser.id,examId:activeExam.id,sessionId:activeSessionId,answers:answers.map((a,i)=>({qId:questions[i].id,ans:Array.isArray(a)?JSON.stringify(a):a}))};
+      if(serverMode){google.script.run.withSuccessHandler(res=>{submitPending=false;autoSubmitOnTimeout=false;autoSubmitRetryCount=0;clearTimeout(autoSubmitRetryTimer);activeExam={};activeSessionId='';document.getElementById('syncStatus').innerText='🟢 Terhubung';document.getElementById('autoSaveStatus').innerText='Jawaban berhasil dikumpulkan';document.getElementById('examSubmitOverlay').classList.add('hide');sessionStorage.removeItem('cbt_pre_exam');sessionStorage.setItem('cbt_student_view','view-student-dashboard');showStudentResult(res);}).withFailureHandler(err=>{document.getElementById('examSubmitOverlay').classList.add('hide');submitPending=false;btn.disabled=false;btn.innerText=activeQ===questions.length-1?'Selesai & Kumpulkan':'Selanjutnya →';document.getElementById('autoSaveStatus').innerText='Pengumpulan belum terkonfirmasi. Silakan coba Submit kembali.';showToast('Gagal mengumpulkan ujian: '+(err&&err.message?err.message:err),'error');setupAutoSave();sessionCheckInt=setInterval(checkCurrentSession,15000);if(autoSubmitOnTimeout&&autoSubmitRetryCount<3){autoSubmitRetryCount++;document.getElementById('autoSaveStatus').innerText='Waktu habis. Mencoba mengumpulkan otomatis kembali ('+autoSubmitRetryCount+'/3)...';autoSubmitRetryTimer=setTimeout(()=>{if(autoSubmitOnTimeout&&!submitPending&&activeExam&&activeExam.id)forceSubmit();},5000);}}).submitExamAnswers(payload,authToken);
+      }else{document.getElementById('examSubmitOverlay').classList.add('hide');submitPending=false;showStudentResult({});activeExam={};}
     }
 
 document.addEventListener('DOMContentLoaded', restoreLoginAfterReload);
