@@ -997,8 +997,9 @@ body::after{
             <div class="flex gap-2 flex-wrap"><button onclick="openStudentForm()" class="bg-primary text-white px-4 py-2 rounded-xl font-medium">＋ Tambah Siswa</button><button onclick="openModal('Siswa')" class="bg-bluePastel text-blue-700 px-4 py-2 rounded-xl font-medium">📥 Upload Massal</button></div>
           </div>
           <div class="bg-white rounded-[2rem] p-6 shadow-soft">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3"><label class="text-sm flex items-center gap-2"><input type="checkbox" id="checkAllStudents" onchange="toggleAllStudents(this.checked)"> Pilih semua siswa</label><button id="btnDeleteSelectedStudents" onclick="deleteSelectedStudents()" class="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-sm font-medium">🗑 Hapus yang Dipilih</button></div>
             <table class="w-full text-left text-sm">
-              <thead><tr class="border-b text-gray-500"><th class="py-3">Nama</th><th>Username/NIS</th><th>Kelas</th><th>Status</th><th>Aksi</th></tr></thead>
+              <thead><tr class="border-b text-gray-500"><th class="py-3">Pilih</th><th>Nama</th><th>Username/NIS</th><th>Kelas</th><th>Status</th><th>Aksi</th></tr></thead>
               <tbody id="tableStudents"></tbody>
             </table>
           </div>
@@ -1006,7 +1007,7 @@ body::after{
 
         <div id="view-admin-classes" class="hide view-transition">
           <div class="flex justify-between items-center mb-6"><h3 class="text-lg font-bold">Manajemen Kelas</h3><button onclick="openClassForm()" class="bg-primary text-white px-4 py-2 rounded-xl font-medium">＋ Tambah Kelas</button></div>
-          <div class="bg-white rounded-[2rem] p-6 shadow-soft"><table class="w-full text-left text-sm"><thead><tr class="border-b text-gray-500"><th class="py-3">Nama Kelas</th><th>Tingkat</th><th>Status</th><th>Aksi</th></tr></thead><tbody id="tableClasses"></tbody></table></div>
+          <div class="bg-white rounded-[2rem] p-6 shadow-soft"><div class="flex flex-wrap items-center justify-between gap-3 mb-3"><label class="text-sm flex items-center gap-2"><input type="checkbox" id="checkAllClasses" onchange="toggleAllClasses(this.checked)"> Pilih semua kelas</label><button onclick="deleteSelectedClasses()" class="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-sm font-medium">🗑 Hapus yang Dipilih</button></div><table class="w-full text-left text-sm"><thead><tr class="border-b text-gray-500"><th class="py-3">Pilih</th><th>Nama Kelas</th><th>Tingkat</th><th>Status</th><th>Aksi</th></tr></thead><tbody id="tableClasses"></tbody></table></div>
         </div>
 
         <div id="view-admin-questions" class="hide view-transition">
@@ -1061,9 +1062,10 @@ body::after{
               <thead><tr class="border-b text-gray-500"><th class="py-3">Siswa</th><th>Ujian</th><th>Status</th><th>Aksi</th></tr></thead>
               <tbody id="tableMonitor"></tbody>
             </table>
+            <div id="monitorPagination" class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm"></div>
             <div class="mt-7 border-t border-gray-100 pt-5">
               <div class="flex justify-between items-center mb-3"><h4 class="font-bold">Riwayat Pelanggaran Anti-Contek</h4><button onclick="loadAntiCheatLogs()" class="text-sm bg-gray-100 px-3 py-1 rounded-lg">🔄 Muat Riwayat</button></div>
-              <div class="overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr class="border-b text-gray-500"><th class="py-3">Waktu</th><th>Siswa</th><th>Ujian</th><th>Jenis Pelanggaran</th><th>Detail</th></tr></thead><tbody id="tableAntiCheatLogs"><tr><td colspan="5" class="py-3 text-gray-400">Belum dimuat.</td></tr></tbody></table></div>
+              <div class="overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr class="border-b text-gray-500"><th class="py-3">Waktu</th><th>Siswa</th><th>Ujian</th><th>Jenis Pelanggaran</th><th>Detail</th></tr></thead><tbody id="tableAntiCheatLogs"><tr><td colspan="5" class="py-3 text-gray-400">Belum dimuat.</td></tr></tbody></table></div><div id="antiCheatPagination" class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm"></div>
             </div>
           </div>
         </div>
@@ -1204,6 +1206,9 @@ body::after{
     let monitorErrorShown = false, sessionCheckErrorShown = false;
     let monitorPollInt = null;
     let previousMonitorStatuses = {};
+    let cachedMonitorSessions = [];
+    let monitorPage = 1, monitorPageSize = 10;
+    let antiCheatPage = 1, antiCheatPageSize = 10;
     let serverMode = (typeof google !== 'undefined' && google.script);
 
     // Utilities
@@ -1718,7 +1723,7 @@ function tampilkanFooterHakcipta(tampilkan) {
     async function loadAdminClasses() {
       switchView('view-admin-classes', 'Manajemen Kelas');
       const body = document.getElementById('tableClasses');
-      body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Memuat kelas...</td></tr>';
+      body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Memuat kelas...</td></tr>';
 
       try {
         const result = await callClassFunction({ action: 'list' });
@@ -1730,6 +1735,13 @@ function tampilkanFooterHakcipta(tampilkan) {
         classes.forEach(c => {
           const tr = document.createElement('tr');
           tr.className = 'border-b border-gray-100';
+
+          const pick = document.createElement('td');
+          pick.className = 'py-3 pr-3';
+          const check = document.createElement('input');
+          check.type = 'checkbox'; check.className = 'class-select'; check.value = c.class_id;
+          check.setAttribute('aria-label', 'Pilih kelas ' + c.class_id);
+          pick.appendChild(check);
 
           const name = document.createElement('td');
           name.className = 'py-3 pr-3 font-medium';
@@ -1755,17 +1767,22 @@ function tampilkanFooterHakcipta(tampilkan) {
           toggle.textContent = active ? 'Nonaktifkan' : 'Aktifkan';
           toggle.onclick = () => setClassStatus(c.class_id, active ? 'Inactive' : 'Active', c.class_name || c.class_id);
           action.appendChild(toggle);
+          const del = document.createElement('button');
+          del.className = 'bg-red-50 text-red-600 px-3 py-1 rounded-lg ml-1';
+          del.textContent = 'Hapus';
+          del.onclick = () => deleteClasses([c.class_id]);
+          action.appendChild(del);
 
-          tr.append(name, level, status, action);
+          tr.append(pick, name, level, status, action);
           body.appendChild(tr);
         });
 
         if (!classes.length) {
-          body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada kelas. Klik Tambah Kelas untuk membuat kelas pertama.</td></tr>';
+          body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Belum ada kelas. Klik Tambah Kelas untuk membuat kelas pertama.</td></tr>';
         }
       } catch (err) {
         console.error('Gagal memuat kelas:', err);
-        body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-red-500">Gagal memuat data kelas.</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-red-500">Gagal memuat data kelas.</td></tr>';
         showToast('Gagal memuat kelas: ' + (err && err.message ? err.message : err), 'error');
       }
     }
@@ -1939,18 +1956,24 @@ function tampilkanFooterHakcipta(tampilkan) {
     async function loadAdminStudents() {
       switchView('view-admin-students', 'Data Siswa');
       const tbody = document.getElementById('tableStudents');
-      tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Memuat data siswa...</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">Memuat data siswa...</td></tr>';
       try {
         const result = await callStudentFunction({ action: 'list' });
         const students = result.students || [];
         tbody.innerHTML = '';
         if (!students.length) {
-          tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Belum ada data siswa.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">Belum ada data siswa.</td></tr>';
           return;
         }
         students.forEach(st => {
           const tr = document.createElement('tr');
           tr.className = 'border-b border-gray-100';
+          const pick = document.createElement('td');
+          pick.className = 'py-3 pr-3';
+          const check = document.createElement('input');
+          check.type = 'checkbox'; check.className = 'student-select'; check.value = st.id;
+          check.setAttribute('aria-label', 'Pilih siswa ' + (st.full_name || st.username || ''));
+          pick.appendChild(check); tr.appendChild(pick);
           [st.full_name, st.username, st.class_id, st.status === 'Active' ? 'Aktif' : 'Nonaktif'].forEach(value => {
             const td = document.createElement('td');
             td.className = 'py-3 pr-3';
@@ -1967,15 +1990,61 @@ function tampilkanFooterHakcipta(tampilkan) {
           statusButton.className = st.status === 'Active' ? 'bg-red-50 text-red-600 px-3 py-1 rounded-lg' : 'bg-green-50 text-green-700 px-3 py-1 rounded-lg';
           statusButton.textContent = st.status === 'Active' ? 'Nonaktifkan' : 'Aktifkan';
           statusButton.onclick = () => changeStudentStatus(st, st.status === 'Active' ? 'Inactive' : 'Active');
-          td.append(edit, statusButton);
+          const del = document.createElement('button');
+          del.className = 'bg-red-50 text-red-600 px-3 py-1 rounded-lg ml-1';
+          del.textContent = 'Hapus';
+          del.onclick = () => deleteStudents([st.id]);
+          td.append(edit, statusButton, del);
           tr.appendChild(td);
           tbody.appendChild(tr);
         });
       } catch (err) {
         console.error('Gagal memuat siswa:', err);
-        tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-red-500">${String(err.message || 'Gagal memuat data siswa.')}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-red-500">${String(err.message || 'Gagal memuat data siswa.')}</td></tr>`;
         showToast('Gagal memuat siswa: ' + (err.message || err), 'error');
       }
+    }
+
+    function toggleAllStudents(checked) { document.querySelectorAll('.student-select').forEach(el => el.checked = checked); }
+    function toggleAllClasses(checked) { document.querySelectorAll('.class-select').forEach(el => el.checked = checked); }
+
+    function deleteSelectedStudents() {
+      const ids = Array.from(document.querySelectorAll('.student-select:checked')).map(el => el.value);
+      if (!ids.length) { showToast('Pilih siswa yang akan dihapus.', 'error'); return; }
+      deleteStudents(ids);
+    }
+
+    function deleteSelectedClasses() {
+      const ids = Array.from(document.querySelectorAll('.class-select:checked')).map(el => el.value);
+      if (!ids.length) { showToast('Pilih kelas yang akan dihapus.', 'error'); return; }
+      deleteClasses(ids);
+    }
+
+    function deleteStudents(ids) {
+      showAppConfirm(`Hapus ${ids.length} akun siswa yang dipilih? Akun tidak dapat login lagi. Riwayat ujian akan dipertahankan.`, async () => {
+        try {
+          const result = await callStudentFunction({ action: 'delete', student_ids: ids });
+          showToast(result.message || 'Akun siswa berhasil dihapus.');
+          await loadAdminStudents();
+        } catch (err) {
+          showToast('Penghapusan siswa: ' + (err && err.message ? err.message : err), 'error');
+          await loadAdminStudents();
+        }
+      }, 'Hapus Akun Siswa', 'Ya, Hapus');
+    }
+
+    function deleteClasses(ids) {
+      showAppConfirm(`Hapus ${ids.length} kelas yang dipilih? Kelas yang masih digunakan siswa/ujian/soal/nilai akan ditolak.`, async () => {
+        try {
+          const result = await callClassFunction({ action: 'delete', class_ids: ids });
+          showToast(result.message || 'Kelas berhasil dihapus.');
+          if (result.failed && result.failed.length) showToast(result.failed.map(x => x.class_id + ': ' + x.message).join(' | '), 'error');
+          await loadAdminClasses();
+        } catch (err) {
+          showToast('Penghapusan kelas: ' + (err && err.message ? err.message : err), 'error');
+          await loadAdminClasses();
+        }
+      }, 'Hapus Kelas', 'Ya, Hapus');
     }
 
     async function openStudentForm(st) {
@@ -2608,7 +2677,7 @@ function tampilkanFooterHakcipta(tampilkan) {
     async function pollAdminMonitor(forceRender=false) {
       if(!currentUser || currentUser.role!=='admin') return;
       try {
-        const result = await callAdminSupabaseFunction('admin-monitor', { action: 'list' }, 'Monitor sesi');
+        const result = await callAdminSupabaseFunction('admin-monitor', { action: 'list', logPage: antiCheatPage, logPageSize: antiCheatPageSize }, 'Monitor sesi');
         monitorErrorShown = false;
         const list = Array.isArray(result.sessions) ? result.sessions : [];
         list.forEach(s=>{
@@ -2632,6 +2701,7 @@ function tampilkanFooterHakcipta(tampilkan) {
         const monitorView=document.getElementById('view-admin-monitor');
         const monitorVisible=monitorView && !monitorView.classList.contains('hide');
         if(forceRender||monitorVisible){
+          cachedMonitorSessions = list;
           renderMonitorRows(list);
           renderAntiCheatLogs((result.logs||[]).map(log=>{
             const session=list.find(s=>s.sessionId===log.session_id) || {};
@@ -2643,7 +2713,7 @@ function tampilkanFooterHakcipta(tampilkan) {
               type:log.violation_type,
               details:log.details
             };
-          }));
+          }), result.logPagination || {});
         }
       } catch(err) {
         if(!monitorErrorShown && (forceRender || !document.getElementById('view-admin-monitor').classList.contains('hide'))){
@@ -2657,12 +2727,14 @@ function tampilkanFooterHakcipta(tampilkan) {
 
     function renderMonitorRows(list) {
       const tbody=document.getElementById('tableMonitor');
+      if(!tbody)return;
+      const total=list.length;
+      const pages=Math.max(1,Math.ceil(total/monitorPageSize));
+      monitorPage=Math.min(Math.max(1,monitorPage),pages);
+      const pageRows=list.slice((monitorPage-1)*monitorPageSize, monitorPage*monitorPageSize);
       tbody.innerHTML='';
-      if(!list.length){
-        tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada sesi ujian.</td></tr>';
-        return;
-      }
-      list.forEach(s=>{
+      if(!total){tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada sesi ujian.</td></tr>';}
+      pageRows.forEach(s=>{
         const tr=document.createElement('tr');
         tr.className='border-b border-gray-100';
         const info=(s.student||s.userId||'Siswa')+' ('+(s.classId||'-')+')';
@@ -2670,47 +2742,30 @@ function tampilkanFooterHakcipta(tampilkan) {
         const statusLabels={Active:'Aktif',Disconnected:'Terputus — menunggu Admin',Blocked:'Diblokir Admin',Submitted:'Selesai Dikumpulkan',Completed:'Selesai',Expired:'Kedaluwarsa'};
         const statusText=(statusLabels[s.status]||s.status||'Tidak diketahui')+' | Pelanggaran: '+(s.violationCount||0);
         [info,detail,statusText+(s.lastHeartbeat?' | Aktivitas terakhir: '+new Date(s.lastHeartbeat).toLocaleString('id-ID'):'')].forEach((v,i)=>{
-          const td=document.createElement('td');
-          td.className='py-3 pr-3';
-          td.textContent=v||'-';
-          if(i===2){
-            td.className+=' '+(s.status==='Disconnected'||s.status==='Blocked'?'text-red-600 font-semibold':s.status==='Active'?'text-green-600':s.status==='Submitted'||s.status==='Completed'?'text-blue-700':'text-gray-600');
-          }
+          const td=document.createElement('td'); td.className='py-3 pr-3'; td.textContent=v||'-';
+          if(i===2)td.className+=' '+(s.status==='Disconnected'||s.status==='Blocked'?'text-red-600 font-semibold':s.status==='Active'?'text-green-600':s.status==='Submitted'||s.status==='Completed'?'text-blue-700':'text-gray-600');
           tr.appendChild(td);
         });
-        const td=document.createElement('td');
-        td.className='py-3';
+        const td=document.createElement('td'); td.className='py-3';
         if(s.status==='Active'){
-          const stop=document.createElement('button');
-          stop.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg mr-1 mb-1';
-          stop.textContent='Hentikan';
-          stop.onclick=()=>stopParticipant(s);
-          td.appendChild(stop);
+          const stop=document.createElement('button'); stop.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg mr-1 mb-1'; stop.textContent='Hentikan'; stop.onclick=()=>stopParticipant(s); td.appendChild(stop);
         } else if(s.status==='Disconnected'||s.status==='Blocked'){
-          const reason=document.createElement('div');
-          reason.className='text-xs text-red-600 mb-2';
-          reason.textContent=s.reason|| (s.status==='Blocked'?'Diblokir Admin':'Koneksi terputus');
-          const approve=document.createElement('button');
-          approve.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mb-1';
-          approve.textContent='Setujui Lanjutkan';
-          approve.onclick=()=>allowReentry(s);
-          td.append(reason,approve);
+          const reason=document.createElement('div'); reason.className='text-xs text-red-600 mb-2'; reason.textContent=s.reason||(s.status==='Blocked'?'Diblokir Admin':'Koneksi terputus');
+          const approve=document.createElement('button'); approve.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mb-1'; approve.textContent='Setujui Lanjutkan'; approve.onclick=()=>allowReentry(s); td.append(reason,approve);
         } else if(s.status==='Submitted'||s.status==='Completed'){
-          const note=document.createElement('div');
-          note.className='text-xs text-gray-500 mb-2';
-          note.textContent='Ujian telah dikumpulkan. Buka ulang akan membuat percobaan baru.';
-          const reopen=document.createElement('button');
-          reopen.className='bg-amber-50 text-amber-700 px-3 py-1 rounded-lg';
-          reopen.textContent='Buka Ulang';
-          reopen.onclick=()=>reopenCompleted(s);
-          td.append(note,reopen);
-        } else {
-          td.textContent=s.reason||'-';
-        }
-        tr.appendChild(td);
-        tbody.appendChild(tr);
+          const note=document.createElement('div'); note.className='text-xs text-gray-500 mb-2'; note.textContent='Ujian telah dikumpulkan. Buka ulang akan membuat percobaan baru.';
+          const reopen=document.createElement('button'); reopen.className='bg-amber-50 text-amber-700 px-3 py-1 rounded-lg'; reopen.textContent='Buka Ulang'; reopen.onclick=()=>reopenCompleted(s); td.append(note,reopen);
+        } else { td.textContent=s.reason||'-'; }
+        tr.appendChild(td); tbody.appendChild(tr);
       });
+      const nav=document.getElementById('monitorPagination');
+      if(nav){
+        const from=total?(monitorPage-1)*monitorPageSize+1:0, to=Math.min(total,monitorPage*monitorPageSize);
+        nav.innerHTML=`<div class="flex items-center gap-2"><span>Baris per halaman</span><select id="monitorPageSize" class="border rounded-lg px-2 py-1"><option value="10" ${monitorPageSize===10?'selected':''}>10</option><option value="25" ${monitorPageSize===25?'selected':''}>25</option><option value="50" ${monitorPageSize===50?'selected':''}>50</option><option value="100" ${monitorPageSize===100?'selected':''}>100</option></select><span class="text-gray-500">${from}–${to} dari ${total}</span></div><div class="flex items-center gap-2"><button onclick="changeMonitorPage(-1)" ${monitorPage<=1?'disabled':''} class="px-3 py-1 rounded-lg bg-gray-100 disabled:opacity-40">Sebelumnya</button><span>Halaman ${monitorPage} / ${pages}</span><button onclick="changeMonitorPage(1)" ${monitorPage>=pages?'disabled':''} class="px-3 py-1 rounded-lg bg-gray-100 disabled:opacity-40">Berikutnya</button></div>`;
+        document.getElementById('monitorPageSize').onchange=e=>{monitorPageSize=Number(e.target.value)||10;monitorPage=1;renderMonitorRows(cachedMonitorSessions);};
+      }
     }
+    function changeMonitorPage(delta){monitorPage+=delta;renderMonitorRows(cachedMonitorSessions);}
 
     function stopParticipant(s) {
       showAppConfirm('Tuliskan alasan penghentian sesi untuk peserta '+s.student+'.',async reason=>{
@@ -3351,35 +3406,36 @@ function tampilkanFooterHakcipta(tampilkan) {
       const tbody=document.getElementById('tableAntiCheatLogs');
       if(tbody)tbody.innerHTML='<tr><td colspan="5" class="py-3 text-gray-400">Memuat riwayat...</td></tr>';
       try{
-        const result=await callAdminSupabaseFunction('admin-monitor',{action:'list'},'Riwayat anti-contek');
+        const result=await callAdminSupabaseFunction('admin-monitor',{action:'list',logPage:antiCheatPage,logPageSize:antiCheatPageSize},'Riwayat anti-contek');
         const sessions=result.sessions||[];
         const logs=(result.logs||[]).map(log=>{
           const session=sessions.find(s=>s.sessionId===log.session_id)||{};
-          return {
-            occurredAt:log.occurred_at,
-            student:session.student||log.user_id||'Siswa',
-            classId:session.classId||'',
-            examName:session.examName||log.exam_id||'-',
-            type:log.violation_type,
-            details:log.details
-          };
+          return {occurredAt:log.occurred_at,student:session.student||log.user_id||'Siswa',classId:session.classId||'',examName:session.examName||log.exam_id||'-',type:log.violation_type,details:log.details};
         });
-        renderAntiCheatLogs(logs);
+        renderAntiCheatLogs(logs,result.logPagination||{});
       }catch(err){
         if(tbody)tbody.innerHTML='<tr><td colspan="5" class="py-3 text-red-500">Gagal memuat riwayat: '+(err&&err.message?String(err.message):'Kesalahan server')+'</td></tr>';
       }
     }
-    function renderAntiCheatLogs(logs){
+    function renderAntiCheatLogs(logs,meta={}){
       const tbody=document.getElementById('tableAntiCheatLogs');if(!tbody)return;tbody.innerHTML='';
-      if(!logs.length){tbody.innerHTML='<tr><td colspan="5" class="py-3 text-center text-gray-400">Belum ada pelanggaran tercatat.</td></tr>';return;}
+      if(!logs.length){tbody.innerHTML='<tr><td colspan="5" class="py-3 text-center text-gray-400">Belum ada pelanggaran tercatat.</td></tr>';}
       const labels={fullscreen_exit:'Keluar Fullscreen',tab_hidden:'Pindah Tab / Halaman Tersembunyi',window_blur:'Jendela Tidak Aktif',copy_attempt:'Percobaan Copy',paste_attempt:'Percobaan Paste',cut_attempt:'Percobaan Cut',context_menu:'Klik Kanan'};
       logs.forEach(log=>{
         const tr=document.createElement('tr');tr.className='border-b border-gray-100';
-        const vals=[log.occurredAt||'-',log.student+' ('+log.classId+')',log.examName||'-',labels[log.type]||log.type,log.details||'-'];
-        vals.forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v;tr.appendChild(td);});
-        tbody.appendChild(tr);
+        const vals=[log.occurredAt?new Date(log.occurredAt).toLocaleString('id-ID'):'-',log.student+' ('+log.classId+')',log.examName||'-',labels[log.type]||log.type,log.details||'-'];
+        vals.forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);
       });
+      const nav=document.getElementById('antiCheatPagination');
+      if(nav){
+        const total=Number(meta.total||0),pages=Math.max(1,Number(meta.totalPages||Math.ceil(total/antiCheatPageSize)||1));
+        antiCheatPage=Number(meta.page||antiCheatPage);antiCheatPageSize=Number(meta.pageSize||antiCheatPageSize);
+        const from=total?(antiCheatPage-1)*antiCheatPageSize+1:0,to=Math.min(total,antiCheatPage*antiCheatPageSize);
+        nav.innerHTML=`<div class="flex items-center gap-2"><span>Baris per halaman</span><select id="antiCheatPageSize" class="border rounded-lg px-2 py-1"><option value="10" ${antiCheatPageSize===10?'selected':''}>10</option><option value="25" ${antiCheatPageSize===25?'selected':''}>25</option><option value="50" ${antiCheatPageSize===50?'selected':''}>50</option><option value="100" ${antiCheatPageSize===100?'selected':''}>100</option></select><span class="text-gray-500">${from}–${to} dari ${total}</span></div><div class="flex items-center gap-2"><button onclick="changeAntiCheatPage(-1)" ${antiCheatPage<=1?'disabled':''} class="px-3 py-1 rounded-lg bg-gray-100 disabled:opacity-40">Sebelumnya</button><span>Halaman ${antiCheatPage} / ${pages}</span><button onclick="changeAntiCheatPage(1)" ${antiCheatPage>=pages?'disabled':''} class="px-3 py-1 rounded-lg bg-gray-100 disabled:opacity-40">Berikutnya</button></div>`;
+        document.getElementById('antiCheatPageSize').onchange=e=>{antiCheatPageSize=Number(e.target.value)||10;antiCheatPage=1;loadAntiCheatLogs();};
+      }
     }
+    function changeAntiCheatPage(delta){antiCheatPage+=delta;loadAntiCheatLogs();}
 
     function checkCurrentSession() {
       if(!serverMode || !activeExam.id || document.getElementById('view-exam-room').classList.contains('hide'))return;
