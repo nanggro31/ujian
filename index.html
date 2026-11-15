@@ -1209,7 +1209,7 @@ body::after{
     let cachedMonitorSessions = [];
     let monitorPage = 1, monitorPageSize = 10;
     let antiCheatPage = 1, antiCheatPageSize = 10;
-    let serverMode = (typeof google !== 'undefined' && google.script);
+    let serverMode = !!(typeof google !== 'undefined' && google.script);
 
     // Utilities
     function showToast(msg, type='success') {
@@ -1398,60 +1398,91 @@ function downloadTemplate(jenjang) {
           return;
         }
 
-        // Upload massal siswa menggunakan Supabase Edge Function create-student.
+        // Impor siswa: akun lama diperbarui tanpa mengubah password;
+        // akun yang belum ada dibuat melalui Edge Function create-student.
         if (currentUploadType === 'Siswa') {
           const clean = value => String(value == null ? '' : value).trim();
-          const normalizedRows = rows
-            .filter(row => Object.values(row).some(value => clean(value) !== ''))
-            .map((row, index) => {
-              const get = (...keys) => {
-                for (const key of keys) {
-                  const found = Object.keys(row).find(k => k.trim().toLowerCase() === key.toLowerCase());
-                  if (found !== undefined) return row[found];
-                }
-                return '';
-              };
-              const username = clean(get('Username'));
-              const password = String(get('Password') == null ? '' : get('Password'));
-              const full_name = clean(get('Name', 'FullName', 'Full Name'));
-              const classRaw = clean(get('ClassID', 'ClassId', 'Class ID'));
-              const class_id = classRaw.replace(/\s+/g, '-');
-              if (!username || !password || !full_name || !class_id) {
-                throw new Error(`Baris ${index + 2}: Username, Password, Name, dan ClassID wajib diisi.`);
+          const sourceRows = rows.filter(row => Object.values(row).some(value => clean(value) !== ''));
+          const normalizedRows = sourceRows.map((row, index) => {
+            const get = (...keys) => {
+              for (const key of keys) {
+                const found = Object.keys(row).find(k => k.trim().toLowerCase() === key.toLowerCase());
+                if (found !== undefined) return row[found];
               }
-              return { username, password, full_name, class_id, rowNumber: index + 2 };
-            });
+              return '';
+            };
+            const username = clean(get('Username', 'NIS'));
+            const password = String(get('Password') == null ? '' : get('Password'));
+            const full_name = clean(get('Name', 'FullName', 'Full Name', 'Nama', 'Nama Siswa'));
+            const classRaw = clean(get('ClassID', 'ClassId', 'Class ID', 'Kelas'));
+            const class_id = classRaw.replace(/\s+/g, '-');
+            return { username, password, full_name, class_id, rowNumber: index + 2 };
+          });
 
           if (!normalizedRows.length) throw new Error('Tidak ada data siswa yang dapat diimpor.');
 
-          let successCount = 0;
+          const seenUsernames = new Set();
           const failures = [];
+          let createdCount = 0;
+          let updatedCount = 0;
+
           for (const student of normalizedRows) {
             try {
-              await callStudentFunction({
-                username: student.username,
-                password: student.password,
-                full_name: student.full_name,
-                class_id: student.class_id
-              }, 'create-student');
-              successCount++;
+              if (!student.username || !student.full_name || !student.class_id) {
+                throw new Error('Username, Name, dan ClassID wajib diisi.');
+              }
+              const usernameKey = student.username.toLowerCase();
+              if (seenUsernames.has(usernameKey)) {
+                throw new Error('Username duplikat di dalam file Excel. Periksa baris sebelumnya.');
+              }
+              seenUsernames.add(usernameKey);
+
+              try {
+                // Jika username sudah ada, backend hanya memperbarui nama dan kelas.
+                // Password akun lama tidak dikirim sehingga tetap tidak berubah.
+                await callStudentFunction({
+                  action: 'update-by-username',
+                  username: student.username,
+                  full_name: student.full_name,
+                  class_id: student.class_id
+                }, 'manage-students');
+                updatedCount++;
+              } catch (lookupError) {
+                // Hanya respons 404 not_found yang berarti akun baru boleh dibuat.
+                // Error validasi, akun admin, akun arsip, atau masalah server tidak boleh
+                // dialihkan menjadi pembuatan akun baru.
+                if (!(lookupError && lookupError.status === 404 && lookupError.result && lookupError.result.not_found === true)) {
+                  throw lookupError;
+                }
+                if (!student.password || student.password.length < 8) {
+                  throw new Error('Akun belum terdaftar. Password untuk siswa baru wajib diisi minimal 8 karakter.');
+                }
+                await callStudentFunction({
+                  username: student.username,
+                  password: student.password,
+                  full_name: student.full_name,
+                  class_id: student.class_id
+                }, 'create-student');
+                createdCount++;
+              }
             } catch (err) {
-              failures.push(`Baris ${student.rowNumber} (${student.username}): ${err.message || err}`);
+              failures.push(`Baris ${student.rowNumber} (${student.username || 'tanpa username'}): ${err && err.message ? err.message : err}`);
             }
           }
 
+          const successCount = createdCount + updatedCount;
           if (successCount > 0) {
             await loadAdminStudents();
             await loadAdminDashboard();
           }
 
           if (failures.length) {
-            const preview = failures.slice(0, 5).join(' | ');
-            const more = failures.length > 5 ? ` | dan ${failures.length - 5} kesalahan lainnya.` : '';
-            throw new Error(`${successCount} siswa berhasil, ${failures.length} gagal. ${preview}${more}`);
+            const preview = failures.slice(0, 6).join(' | ');
+            const more = failures.length > 6 ? ` | dan ${failures.length - 6} kesalahan lainnya.` : '';
+            throw new Error(`${successCount} berhasil (${createdCount} akun baru, ${updatedCount} diperbarui), ${failures.length} gagal. ${preview}${more}`);
           }
 
-          showToast(`${successCount} siswa berhasil diimpor ke Supabase.`);
+          showToast(`${successCount} siswa diproses: ${createdCount} akun baru dan ${updatedCount} data diperbarui.`);
           closeModal();
           input.value = '';
           return;
@@ -1926,6 +1957,7 @@ function tampilkanFooterHakcipta(tampilkan) {
       const accessToken = sessionData && sessionData.session ? sessionData.session.access_token : authToken;
       if (!accessToken) throw new Error('Sesi login tidak ditemukan. Silakan login kembali.');
       authToken = accessToken;
+
       const response = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
         method: 'POST',
         headers: {
@@ -1937,8 +1969,14 @@ function tampilkanFooterHakcipta(tampilkan) {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) {
-        const detail = Array.isArray(result.failed) ? result.failed.map(x => `${x.student_name || x.student_id || 'Siswa'}: ${x.message}`).join(' | ') : (result.detail || '');
-        throw new Error([result.message, detail].filter(Boolean).join(' — ') || `Permintaan siswa gagal. Kode server: ${response.status}`);
+        const detail = Array.isArray(result.failed)
+          ? result.failed.map(x => `${x.student_name || x.student_id || 'Siswa'}: ${x.message}`).join(' | ')
+          : (result.detail || '');
+        const error = new Error([result.message, detail].filter(Boolean).join(' — ') || `Permintaan ${functionName} gagal. Kode server: ${response.status}`);
+        error.status = response.status;
+        error.result = result;
+        error.functionName = functionName;
+        throw error;
       }
       return result;
     }
@@ -2930,6 +2968,55 @@ function tampilkanFooterHakcipta(tampilkan) {
     let antiCheatEnabled=false, antiCheatGatePending=false, antiCheatTimerStarted=false;
     let antiCheatLastEvent={}, antiCheatWasHidden=false, antiCheatListenersInstalled=false;
     let activeQuestionGroup='PG';
+    let answerRevision = 0;
+    let localDraftRestored = false;
+    function answerDraftKey(sessionId = activeSessionId) {
+      return 'cbt_pending_answers_' + String(sessionId || '');
+    }
+    function persistLocalAnswerDraft() {
+      if (!activeSessionId || !questions.length) return;
+      try {
+        const draft = {
+          savedAt: Date.now(),
+          answers: questions.map((q, i) => ({ qId: String(q.id), ans: answers[i] == null ? null : answers[i] }))
+        };
+        sessionStorage.setItem(answerDraftKey(), JSON.stringify(draft));
+      } catch (err) {
+        console.warn('Draft jawaban lokal tidak dapat disimpan:', err);
+      }
+    }
+    function restoreLocalAnswerDraft() {
+      localDraftRestored = false;
+      if (!activeSessionId || !questions.length) return false;
+      try {
+        const raw = sessionStorage.getItem(answerDraftKey());
+        if (!raw) return false;
+        const draft = JSON.parse(raw);
+        if (!draft || !Array.isArray(draft.answers)) return false;
+        const byId = new Map(draft.answers.map(item => [String(item.qId || ''), item.ans]));
+        let restored = 0;
+        questions.forEach((q, i) => {
+          const key = String(q.id);
+          if (!byId.has(key)) return;
+          const value = byId.get(key);
+          // Jangan menimpa jawaban server dengan nilai kosong dari draft lokal.
+          if (value !== null && value !== '' && !(Array.isArray(value) && value.length === 0)) {
+            answers[i] = value;
+            restored++;
+          }
+        });
+        localDraftRestored = restored > 0;
+        if (localDraftRestored) answerRevision++;
+        return localDraftRestored;
+      } catch (err) {
+        console.warn('Draft jawaban lokal tidak dapat dipulihkan:', err);
+        return false;
+      }
+    }
+    function clearLocalAnswerDraft(sessionId = activeSessionId) {
+      if (!sessionId) return;
+      try { sessionStorage.removeItem(answerDraftKey(sessionId)); } catch (err) {}
+    }
     const QUESTION_GROUPS=[{id:'PG',label:'Pilihan Ganda (PG)'},{id:'MCMA',label:'MCMA'}];
     function questionGroupOf(q){const t=String(q.questionType||'PG').toUpperCase();return t==='MCMA'?'MCMA':'PG';}
     function questionIndexes(group){return questions.map((q,i)=>questionGroupOf(q)===group?i:-1).filter(i=>i>=0);}
@@ -3301,9 +3388,20 @@ function tampilkanFooterHakcipta(tampilkan) {
     function startExamSession(qs, remainingSeconds, sessionId) {
       activeSessionId = sessionId || '';
       document.getElementById('syncStatus').innerText = '🔒 Sesi Ujian Aktif';
-      questions = qs;
-      answers = qs.map(q => {if(q.savedAnswer==null||q.savedAnswer==='')return null;if(q.questionType==='PG')return q.savedAnswer;try{const v=JSON.parse(q.savedAnswer);return Array.isArray(v)?v:[q.savedAnswer]}catch(e){return [q.savedAnswer]}});
-      flags = new Array(qs.length).fill(false);
+      questions = (Array.isArray(qs) ? qs : []).map(q => ({
+        ...q,
+        questionType: String(q.questionType || 'PG').toUpperCase() === 'MCMA' ? 'MCMA' : 'PG',
+        options: Array.isArray(q.options) ? q.options : []
+      }));
+      answers = questions.map(q => {
+        if (q.savedAnswer == null || q.savedAnswer === '') return null;
+        if (q.questionType === 'PG') return q.savedAnswer;
+        try { const v = JSON.parse(q.savedAnswer); return Array.isArray(v) ? v : [q.savedAnswer]; }
+        catch (e) { return [q.savedAnswer]; }
+      });
+      answerRevision = 0;
+      restoreLocalAnswerDraft();
+      flags = new Array(questions.length).fill(false);
       activeQ = 0;
       // Saat sesi dipulihkan, peserta diarahkan ke bagian pertama yang belum tuntas.
       activeQuestionGroup=getFirstIncompleteQuestionGroup()||'PG';
@@ -3376,7 +3474,13 @@ function tampilkanFooterHakcipta(tampilkan) {
         startTimer(Number(window.cbtExamRemainingSeconds)||0);
       }
       const status=document.getElementById('autoSaveStatus');
-      if(status && !status.textContent)status.textContent='Mode layar penuh aktif';
+      if (localDraftRestored) {
+        if (status) status.textContent = 'Jawaban lokal dipulihkan. Menyimpan kembali ke server...';
+        localDraftRestored = false;
+        triggerAutoSave();
+      } else if(status && !status.textContent) {
+        status.textContent='Mode layar penuh aktif';
+      }
     }
     function recordAntiCheatViolation(type, details, warning){
       if(!isExamRoomActive() || !activeSessionId)return;
@@ -3485,17 +3589,55 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
     function changeAntiCheatPage(delta){antiCheatPage+=delta;loadAntiCheatLogs();}
 
-    function checkCurrentSession() {
-      if(!serverMode || !activeExam.id || document.getElementById('view-exam-room').classList.contains('hide'))return;
-      google.script.run.withSuccessHandler(res=>{
-        sessionCheckErrorShown=false;
-        if(!res||res.status!=='Active'){
-          clearInterval(timerInt);clearInterval(saveInt);clearInterval(sessionCheckInt);
-          activeExam={};activeSessionId='';
-          showToast(res&&res.message?res.message:'Sesi ujian tidak lagi aktif.','error');
+    async function checkCurrentSession() {
+      const room = document.getElementById('view-exam-room');
+      if (!activeExam.id || !activeSessionId || !room || room.classList.contains('hide') || submitPending) return;
+
+      if (serverMode) {
+        google.script.run.withSuccessHandler(res => {
+          sessionCheckErrorShown = false;
+          if (!res || res.status !== 'Active') {
+            clearInterval(timerInt); clearInterval(saveInt); clearInterval(sessionCheckInt);
+            clearTimeout(autoSaveTimer);
+            activeExam = {}; activeSessionId = '';
+            showToast(res && res.message ? res.message : 'Sesi ujian tidak lagi aktif.', 'error');
+            loadStudentDashboard();
+          }
+        }).withFailureHandler(err => {
+          if (!sessionCheckErrorShown) {
+            sessionCheckErrorShown = true;
+            showToast('Koneksi pemantauan terganggu. Jawaban akan dicoba disimpan kembali saat koneksi pulih.', 'error');
+          }
+        }).apiCheckSession(activeExam.id, authToken, activeSessionId);
+        return;
+      }
+
+      try {
+        const result = await callStudentFunction({ action: 'check-session', sessionId: activeSessionId }, 'student-exam');
+        sessionCheckErrorShown = false;
+        if (String(result.status || '').toLowerCase() !== 'active') {
+          clearInterval(timerInt); clearInterval(saveInt); clearInterval(sessionCheckInt);
+          clearTimeout(autoSaveTimer);
+          autoSaveQueued = false;
+          activeExam = {}; activeSessionId = '';
+          const status = String(result.status || 'Tidak aktif');
+          const message = status === 'Blocked'
+            ? 'Sesi ujian dihentikan oleh Admin.'
+            : status === 'Disconnected'
+              ? 'Sesi ujian terputus dan menunggu persetujuan Admin.'
+              : status === 'Submitted' || status === 'Completed'
+                ? 'Ujian ini sudah dikumpulkan.'
+                : 'Sesi ujian tidak lagi aktif.';
+          showToast(message, 'error');
           loadStudentDashboard();
         }
-      }).withFailureHandler(err=>{if(!sessionCheckErrorShown){sessionCheckErrorShown=true;showToast('Koneksi pemantauan terganggu. Jawaban tetap disimpan otomatis saat koneksi pulih.','error');}}).apiCheckSession(activeExam.id,authToken,activeSessionId);
+      } catch (err) {
+        if (!sessionCheckErrorShown) {
+          sessionCheckErrorShown = true;
+          console.warn('Pemeriksaan sesi Supabase gagal:', err);
+          showToast('Koneksi pemantauan terganggu. Jawaban tetap dicoba disimpan otomatis saat koneksi pulih.', 'error');
+        }
+      }
     }
 
     // Siapkan beberapa endpoint gambar untuk tautan Google Drive lama/baru.
@@ -3570,7 +3712,7 @@ function tampilkanFooterHakcipta(tampilkan) {
       document.getElementById('chkFlag').checked = flags[activeQ];
       
       const opts = document.getElementById('optionsContainer'); opts.innerHTML='';
-      q.options.forEach((opt,index)=>{const multi=q.questionType!=='PG', current=answers[activeQ], selected=multi?(Array.isArray(current)&&current.includes(opt)):current===opt;const label=document.createElement('label');label.className='flex items-center p-4 rounded-xl border '+(selected?'border-primary bg-primaryLight bg-opacity-10':'border-gray-200')+' cursor-pointer transition-all';const control=document.createElement('input');control.type=multi?'checkbox':'radio';control.name='opt';control.className='mr-3';control.checked=selected;control.addEventListener('change',()=>{if(!multi)saveAns(opt);else{const next=Array.isArray(answers[activeQ])?answers[activeQ].slice():[];const at=next.indexOf(opt);if(control.checked&&at<0)next.push(opt);if(!control.checked&&at>=0)next.splice(at,1);saveAns(next)}});const span=document.createElement('span');span.className='font-medium';span.textContent=String.fromCharCode(65+index)+'. '+opt;span.dir=/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(String(opt))?'rtl':'auto';if(span.dir==='rtl')span.classList.add('arabic-text');label.append(control,span);opts.appendChild(label);});
+      q.options.forEach((opt,index)=>{const multi=String(q.questionType||'PG').toUpperCase()==='MCMA', current=answers[activeQ], selected=multi?(Array.isArray(current)&&current.includes(opt)):current===opt;const label=document.createElement('label');label.className='flex items-center p-4 rounded-xl border '+(selected?'border-primary bg-primaryLight bg-opacity-10':'border-gray-200')+' cursor-pointer transition-all';const control=document.createElement('input');control.type=multi?'checkbox':'radio';control.name='opt';control.className='mr-3';control.checked=selected;control.addEventListener('change',()=>{if(!multi)saveAns(opt);else{const next=Array.isArray(answers[activeQ])?answers[activeQ].slice():[];const at=next.indexOf(opt);if(control.checked&&at<0)next.push(opt);if(!control.checked&&at>=0)next.splice(at,1);saveAns(next)}});const span=document.createElement('span');span.className='font-medium';span.textContent=String.fromCharCode(65+index)+'. '+opt;span.dir=/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(String(opt))?'rtl':'auto';if(span.dir==='rtl')span.classList.add('arabic-text');label.append(control,span);opts.appendChild(label);});
       if(window.MathJax && MathJax.typesetPromise){MathJax.typesetPromise([opts]).catch(err=>console.warn('MathJax opsi:',err));}
 
       const btnNext = document.getElementById('btnNextQuestion');
@@ -3624,6 +3766,8 @@ function tampilkanFooterHakcipta(tampilkan) {
 
     function saveAns(val) {
       answers[activeQ] = val;
+      answerRevision++;
+      persistLocalAnswerDraft();
       triggerAutoSave();
       renderQ(); 
       renderNav();
@@ -3662,40 +3806,88 @@ function tampilkanFooterHakcipta(tampilkan) {
       confirmSubmit();
     }
 
-    // Simpan otomatis dengan jeda singkat agar perubahan pilihan beruntun
-    // tidak mengirim banyak permintaan server untuk satu siswa.
+    // Autosave: simpan setelah perubahan jawaban dan setiap 30 detik.
+    // Satu permintaan berjalan pada satu waktu; perubahan baru diantrikan.
+    let autoSavePromise = null;
     function setupAutoSave() {
       clearInterval(saveInt);
       clearTimeout(autoSaveTimer);
-      saveInt = setInterval(() => sendAutoSave(true), 30000);
+      autoSaveQueued = false;
+      saveInt = setInterval(() => { sendAutoSave(true); }, 30000);
     }
 
     function triggerAutoSave() {
-      if(!serverMode || !activeExam.id || submitPending)return;
+      if (!activeExam.id || !activeSessionId || submitPending) return;
       clearTimeout(autoSaveTimer);
-      const indicator=document.getElementById('autoSaveStatus');
-      if(indicator)indicator.innerText='Perubahan jawaban...';
-      autoSaveTimer=setTimeout(()=>sendAutoSave(false),900);
+      const indicator = document.getElementById('autoSaveStatus');
+      if (indicator) indicator.innerText = 'Perubahan jawaban belum disimpan...';
+      autoSaveTimer = setTimeout(() => { sendAutoSave(false); }, 800);
     }
 
-    function sendAutoSave(fromInterval) {
-      if(!serverMode || !activeExam.id || submitPending || !currentUser)return;
-      if(autoSaveInFlight){autoSaveQueued=true;return;}
-      autoSaveInFlight=true;autoSaveQueued=false;
-      const indicator=document.getElementById('autoSaveStatus');
-      if(indicator){indicator.innerText='Menyimpan...';indicator.classList.add('text-primary');}
-      const payloadAnswers=questions.map((q,i)=>({qId:q.id,ans:Array.isArray(answers[i])?JSON.stringify(answers[i]):answers[i]}));
-      google.script.run.withSuccessHandler(()=>{
-        autoSaveInFlight=false;
-        if(indicator){indicator.innerText='Tersimpan';indicator.classList.remove('text-primary');}
-        if(autoSaveQueued&&!submitPending){autoSaveQueued=false;sendAutoSave(false);}
-        else if(indicator)setTimeout(()=>{if(indicator.innerText==='Tersimpan')indicator.innerText='';},2500);
-      }).withFailureHandler(err=>{
-        autoSaveInFlight=false;
-        if(indicator){indicator.innerText='Belum tersimpan — koneksi diperiksa';indicator.classList.remove('text-primary');}
-        // Tidak menampilkan toast untuk setiap autosave; status terlihat di ruang ujian.
-        if(autoSaveQueued&&!submitPending){autoSaveQueued=false;sendAutoSave(false);}
-      }).apiAutoSave(currentUser.id,activeExam.id,payloadAnswers,authToken,activeSessionId);
+    async function sendAutoSave(fromInterval) {
+      if (!activeExam.id || !activeSessionId || submitPending || !currentUser) return false;
+      if (autoSaveInFlight) {
+        autoSaveQueued = true;
+        return autoSavePromise || false;
+      }
+
+      autoSaveInFlight = true;
+      autoSaveQueued = false;
+      const indicator = document.getElementById('autoSaveStatus');
+      if (indicator) {
+        indicator.innerText = 'Menyimpan jawaban...';
+        indicator.classList.add('text-primary');
+      }
+
+      const revisionAtSend = answerRevision;
+      const payloadAnswers = questions.map((q, i) => ({
+        qId: q.id,
+        ans: Array.isArray(answers[i]) ? answers[i] : (answers[i] == null ? '' : answers[i])
+      }));
+
+      autoSavePromise = (async () => {
+        try {
+          if (serverMode) {
+            await new Promise((resolve, reject) => {
+              google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+                .apiAutoSave(currentUser.id, activeExam.id, payloadAnswers, authToken, activeSessionId);
+            });
+          } else {
+            await callStudentFunction({
+              action: 'save-answers',
+              sessionId: activeSessionId,
+              answers: payloadAnswers
+            }, 'student-exam');
+          }
+          if (answerRevision === revisionAtSend) clearLocalAnswerDraft();
+          if (indicator) {
+            indicator.innerText = '✓ Jawaban tersimpan';
+            indicator.classList.remove('text-primary');
+          }
+          return true;
+        } catch (err) {
+          console.warn('Autosave gagal:', err);
+          if (indicator) {
+            indicator.innerText = 'Belum tersimpan — periksa koneksi';
+            indicator.classList.remove('text-primary');
+          }
+          return false;
+        } finally {
+          autoSaveInFlight = false;
+          const shouldRetry = autoSaveQueued && !submitPending && activeExam.id && activeSessionId;
+          autoSaveQueued = false;
+          autoSavePromise = null;
+          if (shouldRetry) {
+            // Jalankan antrean setelah request saat ini benar-benar selesai.
+            setTimeout(() => { sendAutoSave(false); }, 150);
+          } else if (indicator && indicator.innerText === '✓ Jawaban tersimpan') {
+            setTimeout(() => {
+              if (indicator.innerText === '✓ Jawaban tersimpan') indicator.innerText = 'Autosave aktif';
+            }, 2500);
+          }
+        }
+      })();
+      return autoSavePromise;
     }
 
     function confirmSubmit() {
@@ -3730,9 +3922,13 @@ function tampilkanFooterHakcipta(tampilkan) {
       btn.innerText='Mengirim jawaban...';btn.disabled=true;
       document.getElementById('examSubmitOverlay').classList.remove('hide');
       document.getElementById('autoSaveStatus').innerText='Mengirim seluruh jawaban ke server. Mohon jangan tutup halaman...';
-      const payload={userId:currentUser.id,examId:activeExam.id,sessionId:activeSessionId,answers:answers.map((a,i)=>({qId:questions[i].id,ans:Array.isArray(a)?JSON.stringify(a):a}))};
+      // Submit mengirim seluruh jawaban dan backend menyimpannya kembali sebelum penilaian.
+      // Jika autosave sebelumnya masih berlangsung, tunggu agar dua operasi tidak saling bertabrakan.
+      if (autoSavePromise) { try { await autoSavePromise; } catch (e) { /* submit tetap mengirim seluruh jawaban */ } }
+      const payload={userId:currentUser.id,examId:activeExam.id,sessionId:activeSessionId,answers:answers.map((a,i)=>({qId:questions[i].id,ans:Array.isArray(a)?a:a}))};
       const onSuccess=res=>{
         submitPending=false;autoSubmitOnTimeout=false;autoSubmitRetryCount=0;clearTimeout(autoSubmitRetryTimer);
+        clearLocalAnswerDraft(payload.sessionId);
         activeExam={};activeSessionId='';
         document.getElementById('syncStatus').innerText='🟢 Terhubung';
         document.getElementById('autoSaveStatus').innerText='Jawaban berhasil dikumpulkan';
