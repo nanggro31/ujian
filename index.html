@@ -994,10 +994,10 @@ body::after{
         <div id="view-admin-students" class="hide view-transition">
           <div class="flex justify-between items-center mb-6">
             <h3 class="text-lg font-bold">Manajemen Siswa</h3>
-            <div class="flex gap-2 flex-wrap"><button onclick="openStudentForm()" class="bg-primary text-white px-4 py-2 rounded-xl font-medium">＋ Tambah Siswa</button><button onclick="openModal('Siswa')" class="bg-bluePastel text-blue-700 px-4 py-2 rounded-xl font-medium">📥 Upload Massal</button><button id="btnToggleArchivedStudents" onclick="toggleArchivedStudents()" class="bg-amber-50 text-amber-700 px-4 py-2 rounded-xl font-medium">🗃 Lihat Arsip</button></div>
+            <div class="flex gap-2 flex-wrap"><button onclick="openStudentForm()" class="bg-primary text-white px-4 py-2 rounded-xl font-medium">＋ Tambah Siswa</button><button onclick="openModal('Siswa')" class="bg-bluePastel text-blue-700 px-4 py-2 rounded-xl font-medium">📥 Upload Massal</button><button id="btnToggleArchivedStudents" onclick="toggleArchivedStudents()" class="bg-amber-50 text-amber-700 px-4 py-2 rounded-xl font-medium">Pembersihan Arsip Lama</button></div>
           </div>
           <div class="bg-white rounded-[2rem] p-6 shadow-soft">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3"><label class="text-sm flex items-center gap-2"><input type="checkbox" id="checkAllStudents" onchange="toggleAllStudents(this.checked)"> Pilih semua siswa</label><button id="btnDeleteSelectedStudents" onclick="deleteSelectedStudents()" class="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-sm font-medium">🗃 Arsipkan yang Dipilih</button></div>
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3"><label class="text-sm flex items-center gap-2"><input type="checkbox" id="checkAllStudents" onchange="toggleAllStudents(this.checked)"> Pilih semua siswa</label><button id="btnDeleteSelectedStudents" onclick="deleteSelectedStudents()" class="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-sm font-medium">🗑 Hapus Permanen yang Dipilih</button></div>
             <table class="w-full text-left text-sm">
               <thead><tr class="border-b text-gray-500"><th class="py-3">Pilih</th><th>Nama</th><th>Username/NIS</th><th>Kelas</th><th>Status</th><th>Aksi</th></tr></thead>
               <tbody id="tableStudents"></tbody>
@@ -2043,50 +2043,24 @@ function tampilkanFooterHakcipta(tampilkan) {
       }
     }
 
+    // Mode arsip lama hanya untuk membersihkan akun yang diarsipkan oleh versi lama.
     let studentsArchiveMode = false;
 
     async function toggleArchivedStudents() {
       studentsArchiveMode = !studentsArchiveMode;
       const button = document.getElementById('btnToggleArchivedStudents');
-      if (button) {
-        button.textContent = studentsArchiveMode ? '← Kembali ke Siswa Aktif' : '🗃 Lihat Arsip';
-        button.className = studentsArchiveMode
-          ? 'bg-slate-100 text-slate-700 px-4 py-2 rounded-xl font-medium'
-          : 'bg-amber-50 text-amber-700 px-4 py-2 rounded-xl font-medium';
-      }
+      if (button) button.textContent = studentsArchiveMode ? '← Kembali ke Siswa Aktif' : 'Pembersihan Arsip Lama';
       await loadAdminStudents();
     }
 
-    async function restoreStudent(st) {
-      const studentName = st.full_name || st.username || 'siswa';
-      showAppConfirm(
-        `Pulihkan akun ${studentName}? Akun akan kembali aktif. Password dan riwayat ujian tetap dipertahankan.`,
-        async () => {
-          try {
-            const result = await callStudentFunction({
-              action: 'restore',
-              student_id: st.id
-            });
-            showToast(result.message || 'Akun siswa berhasil dipulihkan.');
-            await loadAdminStudents();
-            await loadAdminDashboard();
-          } catch (err) {
-            showToast('Gagal memulihkan siswa: ' + (err.message || err), 'error');
-          }
-        },
-        'Pulihkan Akun Siswa',
-        'Ya, Pulihkan'
-      );
-    }
-
     async function loadAdminStudents() {
-      switchView('view-admin-students', studentsArchiveMode ? 'Arsip Siswa' : 'Data Siswa');
+      switchView('view-admin-students', studentsArchiveMode ? 'Pembersihan Arsip Lama' : 'Data Siswa');
       const tbody = document.getElementById('tableStudents');
       const checkAll = document.getElementById('checkAllStudents');
       const deleteButton = document.getElementById('btnDeleteSelectedStudents');
       if (checkAll) checkAll.checked = false;
-      if (checkAll) checkAll.closest('label').classList.toggle('hide', studentsArchiveMode);
-      if (deleteButton) deleteButton.classList.toggle('hide', studentsArchiveMode);
+      if (checkAll) checkAll.closest('label').classList.remove('hide');
+      if (deleteButton) { deleteButton.classList.remove('hide'); deleteButton.textContent = studentsArchiveMode ? 'Hapus Arsip Lama yang Dipilih' : '🗑 Hapus Permanen yang Dipilih'; }
       tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">Memuat data siswa...</td></tr>';
       try {
         const result = await callStudentFunction({
@@ -2095,7 +2069,7 @@ function tampilkanFooterHakcipta(tampilkan) {
         const students = result.students || [];
         tbody.innerHTML = '';
         if (!students.length) {
-          tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-gray-400">${studentsArchiveMode ? 'Belum ada siswa yang diarsipkan.' : 'Belum ada data siswa.'}</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-gray-400">${studentsArchiveMode ? 'Tidak ada arsip siswa lama.' : 'Belum ada data siswa.'}</td></tr>`; 
           return;
         }
         students.forEach(st => {
@@ -2103,16 +2077,12 @@ function tampilkanFooterHakcipta(tampilkan) {
           tr.className = 'border-b border-gray-100';
           const pick = document.createElement('td');
           pick.className = 'py-3 pr-3';
-          if (!studentsArchiveMode) {
-            const check = document.createElement('input');
-            check.type = 'checkbox'; check.className = 'student-select'; check.value = st.id;
-            check.setAttribute('aria-label', 'Pilih siswa ' + (st.full_name || st.username || ''));
-            pick.appendChild(check);
-          } else {
-            pick.textContent = '—';
-          }
+          const check = document.createElement('input');
+          check.type = 'checkbox'; check.className = 'student-select'; check.value = st.id;
+          check.setAttribute('aria-label', 'Pilih siswa ' + (st.full_name || st.username || ''));
+          pick.appendChild(check);
           tr.appendChild(pick);
-          [st.full_name, st.username, st.class_id, studentsArchiveMode ? 'Diarsipkan' : (st.status === 'Active' ? 'Aktif' : 'Nonaktif')].forEach(value => {
+          [st.full_name, st.username, st.class_id, studentsArchiveMode ? 'Arsip Lama' : (st.status === 'Active' ? 'Aktif' : 'Nonaktif')].forEach(value => {
             const td = document.createElement('td');
             td.className = 'py-3 pr-3';
             td.textContent = value || '-';
@@ -2120,26 +2090,23 @@ function tampilkanFooterHakcipta(tampilkan) {
           });
           const td = document.createElement('td');
           td.className = 'py-3 whitespace-nowrap';
-          if (studentsArchiveMode) {
-            const restore = document.createElement('button');
-            restore.className = 'bg-green-50 text-green-700 px-3 py-1 rounded-lg';
-            restore.textContent = 'Pulihkan';
-            restore.onclick = () => restoreStudent(st);
-            td.appendChild(restore);
-          } else {
-            const edit = document.createElement('button');
-            edit.className = 'bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1';
-            edit.textContent = 'Edit';
-            edit.onclick = () => openStudentForm(st);
-            const statusButton = document.createElement('button');
-            statusButton.className = st.status === 'Active' ? 'bg-red-50 text-red-600 px-3 py-1 rounded-lg' : 'bg-green-50 text-green-700 px-3 py-1 rounded-lg';
-            statusButton.textContent = st.status === 'Active' ? 'Nonaktifkan' : 'Aktifkan';
-            statusButton.onclick = () => changeStudentStatus(st, st.status === 'Active' ? 'Inactive' : 'Active');
+          {
+            if (!studentsArchiveMode) {
+              const edit = document.createElement('button');
+              edit.className = 'bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1';
+              edit.textContent = 'Edit';
+              edit.onclick = () => openStudentForm(st);
+              const statusButton = document.createElement('button');
+              statusButton.className = st.status === 'Active' ? 'bg-red-50 text-red-600 px-3 py-1 rounded-lg' : 'bg-green-50 text-green-700 px-3 py-1 rounded-lg';
+              statusButton.textContent = st.status === 'Active' ? 'Nonaktifkan' : 'Aktifkan';
+              statusButton.onclick = () => changeStudentStatus(st, st.status === 'Active' ? 'Inactive' : 'Active');
+              td.append(edit, statusButton);
+            }
             const del = document.createElement('button');
             del.className = 'bg-red-50 text-red-600 px-3 py-1 rounded-lg ml-1';
-            del.textContent = 'Arsipkan';
+            del.textContent = 'Hapus Permanen';
             del.onclick = () => deleteStudents([st.id]);
-            td.append(edit, statusButton, del);
+            td.appendChild(del);
           }
           tr.appendChild(td);
           tbody.appendChild(tr);
@@ -2156,7 +2123,7 @@ function tampilkanFooterHakcipta(tampilkan) {
 
     function deleteSelectedStudents() {
       const ids = Array.from(document.querySelectorAll('.student-select:checked')).map(el => el.value);
-      if (!ids.length) { showToast('Pilih siswa yang akan diarsipkan.', 'error'); return; }
+      if (!ids.length) { showToast('Pilih siswa yang akan dihapus permanen.', 'error'); return; }
       deleteStudents(ids);
     }
 
@@ -2167,16 +2134,17 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
 
     function deleteStudents(ids) {
-      showAppConfirm(`Arsipkan ${ids.length} akun siswa yang dipilih? Siswa akan hilang dari daftar aktif, tetapi data dan riwayat ujian tetap disimpan. Akun dapat dipulihkan kapan saja.`, async () => {
+      showAppConfirm(`Hapus permanen ${ids.length} akun siswa? Akun Authentication dan profil app_users akan dihapus. Riwayat sesi, jawaban, nilai, dan log tetap disimpan sebagai arsip tanpa akun aktif. Tindakan ini tidak dapat dibatalkan.`, async () => {
         try {
           const result = await callStudentFunction({ action: 'delete', student_ids: ids });
-          showToast(result.message || 'Akun siswa berhasil diarsipkan.');
+          showToast(result.message || 'Akun siswa berhasil dihapus permanen.');
           await loadAdminStudents();
+          await loadAdminDashboard();
         } catch (err) {
-          showToast('Pengarsipan siswa: ' + (err && err.message ? err.message : err), 'error');
+          showToast('Penghapusan siswa: ' + (err && err.message ? err.message : err), 'error');
           await loadAdminStudents();
         }
-      }, 'Arsipkan Akun Siswa', 'Ya, Arsipkan');
+      }, 'Hapus Permanen Akun Siswa', 'Ya, Hapus Permanen');
     }
 
     function deleteClasses(ids) {
