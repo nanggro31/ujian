@@ -1058,10 +1058,16 @@ body::after{
             </div>
             <div id="monitorAlerts" class="hidden mb-4 p-4 rounded-xl bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm"></div>
             <p class="text-xs text-gray-400 mb-3">Pelanggaran fullscreen, perpindahan tab, halaman tidak aktif, serta upaya copy/paste dicatat otomatis. Gangguan koneksi internet saja tidak dihitung sebagai pelanggaran.</p>
-            <table class="w-full text-left text-sm">
-              <thead><tr class="border-b text-gray-500"><th class="py-3">Siswa</th><th>Ujian</th><th>Status</th><th>Aksi</th></tr></thead>
-              <tbody id="tableMonitor"></tbody>
-            </table>
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <p class="text-xs text-gray-500">Pilih riwayat sesi yang sudah tidak aktif untuk dihapus. Sesi yang sedang Aktif tidak dapat dihapus.</p>
+              <button id="btnDeleteSelectedExamHistories" onclick="deleteSelectedExamHistories()" class="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-sm font-semibold">🗑 Hapus Riwayat Dipilih</button>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-sm">
+                <thead><tr class="border-b text-gray-500"><th class="py-3"><input id="checkAllMonitorHistory" type="checkbox" onchange="toggleAllExamHistories(this.checked)" aria-label="Pilih semua riwayat yang dapat dihapus"></th><th>Siswa</th><th>Ujian</th><th>Status</th><th>Aksi</th></tr></thead>
+                <tbody id="tableMonitor"></tbody>
+              </table>
+            </div>
             <div id="monitorPagination" class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm"></div>
             <div class="mt-7 border-t border-gray-100 pt-5">
               <div class="flex justify-between items-center mb-3"><h4 class="font-bold">Riwayat Pelanggaran Anti-Contek</h4><button onclick="loadAntiCheatLogs()" class="text-sm bg-gray-100 px-3 py-1 rounded-lg">🔄 Muat Riwayat</button></div>
@@ -1394,7 +1400,7 @@ function downloadTemplate(jenjang) {
           closeModal();
           input.value = '';
           await loadAdminQuestions();
-          await loadAdminDashboard();
+          await loadAdminDashboard(false);
           return;
         }
 
@@ -1477,7 +1483,7 @@ function downloadTemplate(jenjang) {
           const successCount = createdCount + updatedCount + restoredCount + reconnectedCount;
           if (successCount > 0) {
             await loadAdminStudents();
-            await loadAdminDashboard();
+            await loadAdminDashboard(false);
           }
 
           if (failures.length) {
@@ -1700,8 +1706,8 @@ function downloadTemplate(jenjang) {
 
    
  // --- Admin Functions ---
- async function loadAdminDashboard() {
-   switchView('view-admin-dashboard', 'Dashboard');
+ async function loadAdminDashboard(navigate = true) {
+   if (navigate) switchView('view-admin-dashboard', 'Dashboard');
 
    // Sembunyikan footer saat dashboard admin dibuka
    tampilkanFooterHakcipta(false);
@@ -1803,7 +1809,7 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
 
     async function loadAdminClasses() {
-      switchView('view-admin-classes', 'Manajemen Kelas');
+      if (document.getElementById('view-admin-classes').classList.contains('hide')) switchView('view-admin-classes', 'Manajemen Kelas');
       const body = document.getElementById('tableClasses');
       body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Memuat kelas...</td></tr>';
 
@@ -2054,7 +2060,7 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
 
     async function loadAdminStudents() {
-      switchView('view-admin-students', studentsArchiveMode ? 'Pembersihan Arsip Lama' : 'Data Siswa');
+      if (document.getElementById('view-admin-students').classList.contains('hide')) switchView('view-admin-students', studentsArchiveMode ? 'Pembersihan Arsip Lama' : 'Data Siswa');
       const tbody = document.getElementById('tableStudents');
       const checkAll = document.getElementById('checkAllStudents');
       const deleteButton = document.getElementById('btnDeleteSelectedStudents');
@@ -2139,7 +2145,7 @@ function tampilkanFooterHakcipta(tampilkan) {
           const result = await callStudentFunction({ action: 'delete', student_ids: ids });
           showToast(result.message || 'Akun siswa berhasil dihapus permanen.');
           await loadAdminStudents();
-          await loadAdminDashboard();
+          await loadAdminDashboard(false);
         } catch (err) {
           showToast('Penghapusan siswa: ' + (err && err.message ? err.message : err), 'error');
           await loadAdminStudents();
@@ -2214,7 +2220,7 @@ function tampilkanFooterHakcipta(tampilkan) {
         }
         closeRecordModal();
         await loadAdminStudents();
-        await loadAdminDashboard();
+        await loadAdminDashboard(false);
       } catch (err) {
         showToast('Gagal menyimpan siswa: ' + (err.message || err), 'error');
       } finally {
@@ -2231,7 +2237,7 @@ function tampilkanFooterHakcipta(tampilkan) {
           const result = await callStudentFunction({ action: 'set-status', student_id: st.id, status: newStatus });
           showToast(result.message || `Akun siswa berhasil ${newStatus === 'Active' ? 'diaktifkan' : 'dinonaktifkan'}.`);
           await loadAdminStudents();
-          await loadAdminDashboard();
+          await loadAdminDashboard(false);
         } catch (err) {
           showToast('Gagal mengubah status siswa: ' + (err.message || err), 'error');
         }
@@ -2312,7 +2318,7 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
     function renderQuestionRows(active){const tbody=document.getElementById('tableQuestions');tbody.innerHTML='';if(!active.length){tbody.innerHTML='<tr><td colspan="6" class="py-4 text-center text-gray-400">Tidak ada soal sesuai filter.</td></tr>';return;}active.forEach(q=>{const tr=document.createElement('tr');tr.className='border-b border-gray-100';[q.id,q.subject,q.classId||'Semua',q.text,q.points].forEach(v=>{const td=document.createElement('td');td.className='py-3 pr-3';td.textContent=v==null?'-':v;tr.appendChild(td);});const td=document.createElement('td');td.className='py-3 whitespace-nowrap';const edit=document.createElement('button');edit.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mr-1';edit.textContent='Edit';edit.onclick=()=>openQuestionForm(q);const del=document.createElement('button');del.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg';del.textContent='Hapus';del.onclick=()=>deleteQuestion(q);td.append(edit,del);tr.appendChild(td);tbody.appendChild(tr);});}
     async function loadAdminQuestions() {
-      switchView('view-admin-questions', 'Bank Soal');
+      if (document.getElementById('view-admin-questions').classList.contains('hide')) switchView('view-admin-questions', 'Bank Soal');
       const tbody = document.getElementById('tableQuestions');
       tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">Memuat bank soal...</td></tr>';
       try {
@@ -2477,7 +2483,7 @@ function tampilkanFooterHakcipta(tampilkan) {
         showToast(result.message || (editingQuestionId ? 'Soal berhasil diperbarui.' : 'Soal berhasil ditambahkan.'));
         closeRecordModal();
         await loadAdminQuestions();
-        await loadAdminDashboard();
+        await loadAdminDashboard(false);
       } catch (err) {
         console.error('Gagal menyimpan soal:', err);
         showToast('Gagal menyimpan soal: ' + (err && err.message ? err.message : err), 'error');
@@ -2495,7 +2501,7 @@ function tampilkanFooterHakcipta(tampilkan) {
             const result = await callQuestionFunction({ action: 'delete', question_id: q.id });
             showToast(result.message || 'Soal berhasil dinonaktifkan.');
             await loadAdminQuestions();
-            await loadAdminDashboard();
+            await loadAdminDashboard(false);
           } catch (err) {
             showToast('Gagal menghapus soal: ' + (err && err.message ? err.message : err), 'error');
           }
@@ -2584,7 +2590,7 @@ function tampilkanFooterHakcipta(tampilkan) {
     }
 
     async function loadAdminExams() {
-      switchView('view-admin-exams', 'Jadwal & Token Ujian');
+      if (document.getElementById('view-admin-exams').classList.contains('hide')) switchView('view-admin-exams', 'Jadwal & Token Ujian');
       loadClassOptions('exClass');
       loadExamSubjectOptions();
       const tbody = document.getElementById('tableExams');
@@ -2701,7 +2707,7 @@ function tampilkanFooterHakcipta(tampilkan) {
         }
         resetExamForm();
         await loadAdminExams();
-        loadAdminDashboard();
+        loadAdminDashboard(false);
       } catch (err) {
         showToast('Gagal menyimpan ujian: ' + (err && err.message ? err.message : err), 'error');
       } finally {
@@ -2749,7 +2755,7 @@ function tampilkanFooterHakcipta(tampilkan) {
             showToast(result.message || 'Status diperbarui.');
           }
           await loadAdminExams();
-          loadAdminDashboard();
+          loadAdminDashboard(false);
         } catch (err) {
           showToast('Gagal mengubah status: ' + (err && err.message ? err.message : err), 'error');
         }
@@ -2768,7 +2774,7 @@ function tampilkanFooterHakcipta(tampilkan) {
             showToast(result.message || 'Ujian dihapus.');
           }
           await loadAdminExams();
-          loadAdminDashboard();
+          loadAdminDashboard(false);
         } catch (err) {
           showToast('Gagal menghapus ujian: ' + (err && err.message ? err.message : err), 'error');
         }
@@ -2834,7 +2840,7 @@ function tampilkanFooterHakcipta(tampilkan) {
           monitorErrorShown = true;
           showToast('Monitor gagal diperbarui: '+(err && err.message ? err.message : err),'error');
           const tbody=document.getElementById('tableMonitor');
-          if(tbody)tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-red-500">Gagal memuat monitor. Silakan tekan Refresh.</td></tr>';
+          if(tbody)tbody.innerHTML='<tr><td colspan="5" class="py-4 text-center text-red-500">Gagal memuat monitor. Silakan tekan Refresh.</td></tr>';
         }
       }
     }
@@ -2847,26 +2853,33 @@ function tampilkanFooterHakcipta(tampilkan) {
       monitorPage=Math.min(Math.max(1,monitorPage),pages);
       const pageRows=list.slice((monitorPage-1)*monitorPageSize, monitorPage*monitorPageSize);
       tbody.innerHTML='';
-      if(!total){tbody.innerHTML='<tr><td colspan="4" class="py-4 text-center text-gray-400">Belum ada sesi ujian.</td></tr>';}
+      const checkAll=document.getElementById('checkAllMonitorHistory');if(checkAll)checkAll.checked=false;
+      if(!total){tbody.innerHTML='<tr><td colspan="5" class="py-4 text-center text-gray-400">Belum ada sesi ujian.</td></tr>';}
       pageRows.forEach(s=>{
         const tr=document.createElement('tr');
         tr.className='border-b border-gray-100';
+        const pick=document.createElement('td');pick.className='py-3 pr-3';
+        const selectable=String(s.status||'').toLowerCase()!=='active' && !!s.sessionId;
+        const check=document.createElement('input');check.type='checkbox';check.className='monitor-history-select';check.value=s.sessionId||'';check.disabled=!selectable;check.setAttribute('aria-label','Pilih riwayat '+(s.student||s.sessionId||''));
+        if(!selectable)check.title='Sesi yang sedang aktif tidak dapat dihapus';
+        pick.appendChild(check);tr.appendChild(pick);
         const info=(s.student||s.userId||'Siswa')+' ('+(s.classId||'-')+')';
         const detail=(s.examName||s.examId||'-')+' - '+(s.subject||'-');
-        const statusLabels={Active:'Aktif',Disconnected:'Terputus — menunggu Admin',Blocked:'Diblokir Admin',Submitted:'Selesai Dikumpulkan',Completed:'Selesai',Expired:'Kedaluwarsa'};
-        const statusText=(statusLabels[s.status]||s.status||'Tidak diketahui')+' | Pelanggaran: '+(s.violationCount||0);
+        const statusKey=String(s.status||'').toLowerCase();
+        const statusLabels={active:'Aktif',disconnected:'Terputus — menunggu Admin',blocked:'Diblokir Admin',submitted:'Selesai Dikumpulkan',completed:'Selesai',expired:'Kedaluwarsa'};
+        const statusText=(statusLabels[statusKey]||s.status||'Tidak diketahui')+' | Pelanggaran: '+(s.violationCount||0);
         [info,detail,statusText+(s.lastHeartbeat?' | Aktivitas terakhir: '+new Date(s.lastHeartbeat).toLocaleString('id-ID'):'')].forEach((v,i)=>{
           const td=document.createElement('td'); td.className='py-3 pr-3'; td.textContent=v||'-';
-          if(i===2)td.className+=' '+(s.status==='Disconnected'||s.status==='Blocked'?'text-red-600 font-semibold':s.status==='Active'?'text-green-600':s.status==='Submitted'||s.status==='Completed'?'text-blue-700':'text-gray-600');
+          if(i===2)td.className+=' '+(statusKey==='disconnected'||statusKey==='blocked'?'text-red-600 font-semibold':statusKey==='active'?'text-green-600':statusKey==='submitted'||statusKey==='completed'?'text-blue-700':'text-gray-600');
           tr.appendChild(td);
         });
         const td=document.createElement('td'); td.className='py-3';
-        if(s.status==='Active'){
+        if(statusKey==='active'){
           const stop=document.createElement('button'); stop.className='bg-red-50 text-red-600 px-3 py-1 rounded-lg mr-1 mb-1'; stop.textContent='Hentikan'; stop.onclick=()=>stopParticipant(s); td.appendChild(stop);
-        } else if(s.status==='Disconnected'||s.status==='Blocked'){
-          const reason=document.createElement('div'); reason.className='text-xs text-red-600 mb-2'; reason.textContent=s.reason||(s.status==='Blocked'?'Diblokir Admin':'Koneksi terputus');
+        } else if(statusKey==='disconnected'||statusKey==='blocked'){
+          const reason=document.createElement('div'); reason.className='text-xs text-red-600 mb-2'; reason.textContent=s.reason||(statusKey==='blocked'?'Diblokir Admin':'Koneksi terputus');
           const approve=document.createElement('button'); approve.className='bg-bluePastel text-blue-700 px-3 py-1 rounded-lg mb-1'; approve.textContent='Setujui Lanjutkan'; approve.onclick=()=>allowReentry(s); td.append(reason,approve);
-        } else if(s.status==='Submitted'||s.status==='Completed'){
+        } else if(statusKey==='submitted'||statusKey==='completed'){
           const note=document.createElement('div'); note.className='text-xs text-gray-500 mb-2'; note.textContent='Ujian telah dikumpulkan. Buka ulang akan membuat percobaan baru.';
           const reopen=document.createElement('button'); reopen.className='bg-amber-50 text-amber-700 px-3 py-1 rounded-lg'; reopen.textContent='Buka Ulang'; reopen.onclick=()=>reopenCompleted(s); td.append(note,reopen);
         } else { td.textContent=s.reason||'-'; }
@@ -2880,6 +2893,41 @@ function tampilkanFooterHakcipta(tampilkan) {
       }
     }
     function changeMonitorPage(delta){monitorPage+=delta;renderMonitorRows(cachedMonitorSessions);}
+
+    function toggleAllExamHistories(checked) {
+      document.querySelectorAll('.monitor-history-select:not(:disabled)').forEach(el => { el.checked = checked; });
+    }
+
+    function deleteSelectedExamHistories() {
+      const sessionIds = Array.from(document.querySelectorAll('.monitor-history-select:checked:not(:disabled)'))
+        .map(el => String(el.value || '').trim()).filter(Boolean);
+      if (!sessionIds.length) {
+        showToast('Pilih minimal satu riwayat ujian yang sudah tidak aktif.', 'error');
+        return;
+      }
+      showAppConfirm(
+        `Hapus permanen ${sessionIds.length} riwayat sesi ujian beserta jawaban, nilai, dan log anti-contek yang terkait? Data yang dihapus tidak dapat dipulihkan. Sesi Aktif tidak dapat dihapus.`,
+        async () => {
+          const button = document.getElementById('btnDeleteSelectedExamHistories');
+          if (button) { button.disabled = true; button.textContent = 'Menghapus...'; }
+          try {
+            const result = await callAdminSupabaseFunction('admin-monitor', {
+              action: 'delete-history', sessionIds
+            }, 'Hapus riwayat ujian');
+            showToast(result.message || `${result.deletedCount || sessionIds.length} riwayat ujian berhasil dihapus.`);
+            const all = document.getElementById('checkAllMonitorHistory');
+            if (all) all.checked = false;
+            await pollAdminMonitor(true);
+          } catch (err) {
+            showToast('Gagal menghapus riwayat ujian: ' + (err && err.message ? err.message : err), 'error');
+          } finally {
+            if (button) { button.disabled = false; button.textContent = '🗑 Hapus Riwayat Dipilih'; }
+          }
+        },
+        'Konfirmasi Hapus Riwayat Ujian',
+        'Ya, Hapus Permanen'
+      );
+    }
 
     function stopParticipant(s) {
       showAppConfirm('Tuliskan alasan penghentian sesi untuk peserta '+s.student+'.',async reason=>{
